@@ -1,0 +1,69 @@
+# devbox zsh — batteries-included dev shell. Every tool is optional (guarded),
+# so this file works even if an install step was skipped.
+
+# user-owned bins first: npm globals (claude/codex, self-updatable) and
+# ~/.local/bin (agy/antigravity, pipx). Set before the tmux attach so panes
+# inherit it.
+export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"
+
+# ── attach the persistent session on SSH login ──────────────────────────────
+# So connecting from a phone / any SSH client lands you straight in `main`,
+# where your agents are running. Skips non-interactive, non-SSH, and panes
+# already inside tmux (no nesting). Escape hatch: `ssh dev@host bash`.
+if [[ $- == *i* ]] && [[ -z ${TMUX:-} ]] && [[ -n ${SSH_CONNECTION:-} ]] && command -v tmux >/dev/null; then
+  exec tmux new -A -s main
+fi
+
+# ── history ───────────────────────────────────────────────────────────────
+HISTFILE=~/.zsh_history
+HISTSIZE=50000
+SAVEHIST=50000
+setopt SHARE_HISTORY HIST_IGNORE_ALL_DUPS HIST_REDUCE_BLANKS INC_APPEND_HISTORY
+setopt AUTO_CD INTERACTIVE_COMMENTS PROMPT_SUBST
+
+# ── completion ────────────────────────────────────────────────────────────
+autoload -Uz compinit && compinit -u
+zstyle ':completion:*' menu select
+zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}'   # case-insensitive
+
+# ── suggestions + highlighting ──────────────────────────────────────────────
+for f in /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh \
+         /usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh; do
+  [ -r "$f" ] && { source "$f"; break; }
+done
+ZSH_AUTOSUGGEST_STRATEGY=(history completion)
+for f in /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh \
+         /usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh; do
+  [ -r "$f" ] && { source "$f"; break; }
+done
+
+# ── fzf: Ctrl+R history · Ctrl+T files · Alt+C cd ───────────────────────────
+for f in /usr/share/doc/fzf/examples/key-bindings.zsh /usr/share/fzf/key-bindings.zsh; do
+  [ -r "$f" ] && { source "$f"; break; }
+done
+for f in /usr/share/doc/fzf/examples/completion.zsh /usr/share/fzf/completion.zsh; do
+  [ -r "$f" ] && { source "$f"; break; }
+done
+
+# ── prompt + smart cd ───────────────────────────────────────────────────────
+command -v starship >/dev/null && eval "$(starship init zsh)"
+command -v zoxide   >/dev/null && eval "$(zoxide init zsh)"
+command -v direnv   >/dev/null && eval "$(direnv hook zsh)"
+
+# ── aliases ─────────────────────────────────────────────────────────────────
+if command -v eza >/dev/null; then
+  alias ls='eza --git --group-directories-first'
+  alias ll='eza -l --git --group-directories-first'
+  alias la='eza -la --git --group-directories-first'
+  alias tree='eza --tree'
+fi
+command -v batcat >/dev/null && alias cat='batcat -pp'
+command -v bat    >/dev/null && alias cat='bat -pp'
+alias g=git
+command -v lazygit >/dev/null && alias lg=lazygit
+command -v fdfind  >/dev/null && alias fd=fdfind          # Debian names it fdfind
+command -v nvim    >/dev/null && export EDITOR=nvim VISUAL=nvim
+
+# ── report cwd via OSC 7 so devbox scopes uploads to the project ────────────
+__devbox_osc7() { printf '\033]7;file://%s%s\033\\' "${HOST:-h}" "$PWD"; }
+autoload -Uz add-zsh-hook && add-zsh-hook precmd __devbox_osc7
