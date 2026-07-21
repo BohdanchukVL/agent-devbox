@@ -1,0 +1,78 @@
+name: Destroy Azure environment
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type "destroy" to confirm deleting the VM and its data
+        required: true
+
+concurrency: azure-devbox
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  destroy:
+    runs-on: ubuntu-latest
+    env:
+      TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+      HAS_OIDC: ${{ secrets.AZURE_CLIENT_ID != '' }}
+
+    steps:
+      - name: Check confirmation
+        if: inputs.confirm != 'destroy'
+        run: |
+          echo '::error::Confirmation failed — type "destroy" in the confirm field.'
+          exit 1
+
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Azure login (OIDC)
+        if: env.HAS_OIDC == 'true'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Azure login (service principal secret)
+        if: env.HAS_OIDC != 'true'
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Locate state backend
+        id: state
+        run: |
+          SUB_ID=$(az account show --query id -o tsv)
+          echo "ARM_SUBSCRIPTION_ID=$SUB_ID" >> "$GITHUB_ENV"
+
+          RG="agent-devbox-tfstate"
+          SA="devboxtf$(echo -n "$GITHUB_REPOSITORY" | sha256sum | cut -c1-14)"
+          KEY=$(az storage account keys list --account-name "$SA" --resource-group "$RG" --query '[0].value' -o tsv)
+          echo "::add-mask::$KEY"
+          echo "ARM_ACCESS_KEY=$KEY" >> "$GITHUB_ENV"
+          echo "resource_group=$RG"  >> "$GITHUB_OUTPUT"
+          echo "storage_account=$SA" >> "$GITHUB_OUTPUT"
+
+      - name: Terraform init
+        working-directory: terraform/azure
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ steps.state.outputs.resource_group }}" \
+            -backend-config="storage_account_name=${{ steps.state.outputs.storage_account }}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=azure/terraform.tfstate"
+
+      - name: Terraform destroy
+        working-directory: terraform/azure
+        run: terraform destroy -auto-approve
+
+      - name: Summary
+        run: echo "## 🗑️ Azure environment destroyed" >> "$GITHUB_STEP_SUMMARY"

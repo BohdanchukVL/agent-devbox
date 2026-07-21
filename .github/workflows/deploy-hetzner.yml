@@ -1,0 +1,152 @@
+name: Deploy to Hetzner
+
+on:
+  workflow_dispatch:
+    inputs:
+      server_type:
+        description: Server size
+        required: true
+        type: choice
+        default: cx33
+        options: [cx23, cx33, cx43, cx53, cpx32, cpx42]
+      location:
+        description: Location
+        required: true
+        type: choice
+        default: nbg1
+        options: [nbg1, fsn1, hel1]
+      disk_size:
+        description: Workspace volume size in GB (0 = root disk only)
+        required: true
+        default: "80"
+      install_docker:
+        description: Install Docker
+        type: boolean
+        default: true
+      install_codex:
+        description: Install Codex CLI
+        type: boolean
+        default: true
+      install_claude:
+        description: Install Claude Code
+        type: boolean
+        default: true
+      install_opencode:
+        description: Install OpenCode
+        type: boolean
+        default: false
+      install_antigravity:
+        description: Install Google Antigravity CLI (agy)
+        type: boolean
+        default: false
+      install_browser:
+        description: Install headless browser (Playwright/Chromium) for web testing
+        type: boolean
+        default: true
+
+# One devbox per repo — serialize runs against the shared state.
+concurrency: hetzner-devbox
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+      # Hetzner Object Storage credentials, consumed by both the AWS CLI
+      # (bootstrap) and the Terraform s3 backend.
+      AWS_ACCESS_KEY_ID: ${{ secrets.HETZNER_S3_ACCESS_KEY }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.HETZNER_S3_SECRET_KEY }}
+      TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+      # Object Storage location for the state bucket; independent from the
+      # server location so the state survives location changes.
+      STATE_LOCATION: ${{ vars.HETZNER_STATE_LOCATION || 'fsn1' }}
+      # Free-form input — pass via env, never interpolate into a run: script.
+      DISK_SIZE: ${{ inputs.disk_size }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate SSH public key
+        run: |
+          if ! ssh-keygen -l -f /dev/stdin <<< "$TF_VAR_ssh_public_key" >/dev/null 2>&1; then
+            echo '::error::SSH_PUBLIC_KEY is not a valid OpenSSH public key — expected one line ("ssh-ed25519 AAAA…" / "ssh-rsa AAAA…"), i.e. the contents of your .pub file, not the private key.'
+            exit 1
+          fi
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Bootstrap state backend
+        id: state
+        run: |
+          OWNER=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+          BUCKET="tfstate-agent-devbox-$OWNER"
+          ENDPOINT="https://$STATE_LOCATION.your-objectstorage.com"
+          # Hetzner requires the client region to match the endpoint location
+          if ! aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+            echo "Creating state bucket $BUCKET at $ENDPOINT"
+            aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3api create-bucket --bucket "$BUCKET" \
+              --create-bucket-configuration "LocationConstraint=$STATE_LOCATION"
+          fi
+          echo "bucket=$BUCKET"     >> "$GITHUB_OUTPUT"
+          echo "endpoint=$ENDPOINT" >> "$GITHUB_OUTPUT"
+
+      - name: Terraform init
+        working-directory: terraform/hetzner
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ steps.state.outputs.bucket }}" \
+            -backend-config="key=hetzner/terraform.tfstate" \
+            -backend-config="region=$STATE_LOCATION" \
+            -backend-config="endpoints={s3=\"${{ steps.state.outputs.endpoint }}\"}" \
+            -backend-config="use_path_style=true" \
+            -backend-config="skip_credentials_validation=true" \
+            -backend-config="skip_region_validation=true" \
+            -backend-config="skip_requesting_account_id=true" \
+            -backend-config="skip_metadata_api_check=true" \
+            -backend-config="skip_s3_checksum=true"
+
+      - name: Terraform apply
+        working-directory: terraform/hetzner
+        run: |
+          terraform apply -auto-approve \
+            -var="server_type=${{ inputs.server_type }}" \
+            -var="location=${{ inputs.location }}" \
+            -var="disk_size=$DISK_SIZE" \
+            -var="install_docker=${{ inputs.install_docker }}" \
+            -var="install_codex=${{ inputs.install_codex }}" \
+            -var="install_claude=${{ inputs.install_claude }}" \
+            -var="install_opencode=${{ inputs.install_opencode }}" \
+            -var="install_antigravity=${{ inputs.install_antigravity }}" \
+            -var="install_browser=${{ inputs.install_browser }}"
+
+      - name: Deployment summary
+        working-directory: terraform/hetzner
+        run: |
+          IP=$(terraform output -raw public_ip)
+          USER=$(terraform output -raw username)
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## ✅ Deployment completed
+
+          | | |
+          |---|---|
+          | **IP** | \`$IP\` |
+          | **User** | \`$USER\` |
+          | **Server** | ${{ inputs.server_type }} @ ${{ inputs.location }} |
+
+          Connect:
+
+          \`\`\`bash
+          ssh $USER@$IP
+          \`\`\`
+
+          Provisioning keeps running for a few minutes after boot — the MOTD
+          shows live status. Then authenticate your agents:
+
+          \`\`\`bash
+          gh auth login
+          codex login --device-auth
+          claude
+          \`\`\`
+          EOF

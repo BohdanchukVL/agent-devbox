@@ -1,0 +1,81 @@
+name: Destroy AWS environment
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type "destroy" to confirm deleting the instance and its data
+        required: true
+      region:
+        description: Region the devbox was deployed to
+        required: true
+        type: choice
+        default: eu-central-1
+        options: [eu-central-1, eu-west-1, us-east-1, us-west-2]
+
+concurrency: aws-devbox
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  destroy:
+    runs-on: ubuntu-latest
+    env:
+      TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+      HAS_ROLE: ${{ secrets.AWS_ROLE_ARN != '' }}
+
+    steps:
+      - name: Check confirmation
+        if: inputs.confirm != 'destroy'
+        run: |
+          echo '::error::Confirmation failed — type "destroy" in the confirm field.'
+          exit 1
+
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Configure AWS credentials (OIDC role)
+        if: env.HAS_ROLE == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ inputs.region }}
+
+      - name: Configure AWS credentials (access keys)
+        if: env.HAS_ROLE != 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ inputs.region }}
+
+      - name: Locate state backend
+        id: state
+        run: |
+          OWNER=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+          BUCKET="tfstate-agent-devbox-$OWNER"
+          LOC=$(aws s3api get-bucket-location --bucket "$BUCKET" --query LocationConstraint --output text)
+          [ "$LOC" = "None" ] || [ "$LOC" = "null" ] && LOC="us-east-1"
+          echo "bucket=$BUCKET"     >> "$GITHUB_OUTPUT"
+          echo "bucket_region=$LOC" >> "$GITHUB_OUTPUT"
+
+      - name: Terraform init
+        working-directory: terraform/aws
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ steps.state.outputs.bucket }}" \
+            -backend-config="key=aws/terraform.tfstate" \
+            -backend-config="region=${{ steps.state.outputs.bucket_region }}" \
+            -backend-config="use_lockfile=true"
+
+      - name: Terraform destroy
+        working-directory: terraform/aws
+        run: terraform destroy -auto-approve -var="region=${{ inputs.region }}"
+
+      - name: Summary
+        run: echo "## 🗑️ AWS environment destroyed" >> "$GITHUB_STEP_SUMMARY"

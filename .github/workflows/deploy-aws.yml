@@ -1,0 +1,169 @@
+name: Deploy to AWS
+
+on:
+  workflow_dispatch:
+    inputs:
+      region:
+        description: Region
+        required: true
+        type: choice
+        default: eu-central-1
+        options: [eu-central-1, eu-west-1, us-east-1, us-west-2]
+      instance_type:
+        description: Machine size
+        required: true
+        type: choice
+        default: t3.medium
+        options: [t3.small, t3.medium, t3.large, t3.xlarge]
+      disk_size:
+        description: Root disk size in GB
+        required: true
+        default: "80"
+      install_docker:
+        description: Install Docker
+        type: boolean
+        default: true
+      install_codex:
+        description: Install Codex CLI
+        type: boolean
+        default: true
+      install_claude:
+        description: Install Claude Code
+        type: boolean
+        default: true
+      install_opencode:
+        description: Install OpenCode
+        type: boolean
+        default: false
+      install_antigravity:
+        description: Install Google Antigravity CLI (agy)
+        type: boolean
+        default: false
+      install_browser:
+        description: Install headless browser (Playwright/Chromium) for web testing
+        type: boolean
+        default: true
+
+concurrency: aws-devbox
+
+permissions:
+  id-token: write # OIDC auth mode
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+      HAS_ROLE: ${{ secrets.AWS_ROLE_ARN != '' }}
+      # Free-form input — pass via env, never interpolate into a run: script.
+      DISK_SIZE: ${{ inputs.disk_size }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate SSH public key
+        run: |
+          if ! ssh-keygen -l -f /dev/stdin <<< "$TF_VAR_ssh_public_key" >/dev/null 2>&1; then
+            echo '::error::SSH_PUBLIC_KEY is not a valid OpenSSH public key — expected one line ("ssh-ed25519 AAAA…" / "ssh-rsa AAAA…"), i.e. the contents of your .pub file, not the private key.'
+            exit 1
+          fi
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Configure AWS credentials (OIDC role)
+        if: env.HAS_ROLE == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ inputs.region }}
+
+      - name: Configure AWS credentials (access keys)
+        if: env.HAS_ROLE != 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ inputs.region }}
+
+      - name: Bootstrap state backend
+        id: state
+        run: |
+          OWNER=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+          BUCKET="tfstate-agent-devbox-$OWNER"
+          if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+            # Bucket already exists — the backend must use ITS region, which
+            # may differ from the deploy region.
+            LOC=$(aws s3api get-bucket-location --bucket "$BUCKET" --query LocationConstraint --output text)
+            [ "$LOC" = "None" ] || [ "$LOC" = "null" ] && LOC="us-east-1"
+          else
+            LOC="${{ inputs.region }}"
+            echo "Creating state bucket $BUCKET in $LOC"
+            if [ "$LOC" = "us-east-1" ]; then
+              aws s3api create-bucket --bucket "$BUCKET"
+            else
+              aws s3api create-bucket --bucket "$BUCKET" \
+                --create-bucket-configuration "LocationConstraint=$LOC"
+            fi
+            aws s3api put-bucket-versioning --bucket "$BUCKET" \
+              --versioning-configuration Status=Enabled
+            aws s3api put-public-access-block --bucket "$BUCKET" \
+              --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+          fi
+          echo "bucket=$BUCKET"      >> "$GITHUB_OUTPUT"
+          echo "bucket_region=$LOC"  >> "$GITHUB_OUTPUT"
+
+      - name: Terraform init
+        working-directory: terraform/aws
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ steps.state.outputs.bucket }}" \
+            -backend-config="key=aws/terraform.tfstate" \
+            -backend-config="region=${{ steps.state.outputs.bucket_region }}" \
+            -backend-config="use_lockfile=true"
+
+      - name: Terraform apply
+        working-directory: terraform/aws
+        run: |
+          terraform apply -auto-approve \
+            -var="region=${{ inputs.region }}" \
+            -var="instance_type=${{ inputs.instance_type }}" \
+            -var="disk_size=$DISK_SIZE" \
+            -var="install_docker=${{ inputs.install_docker }}" \
+            -var="install_codex=${{ inputs.install_codex }}" \
+            -var="install_claude=${{ inputs.install_claude }}" \
+            -var="install_opencode=${{ inputs.install_opencode }}" \
+            -var="install_antigravity=${{ inputs.install_antigravity }}" \
+            -var="install_browser=${{ inputs.install_browser }}"
+
+      - name: Deployment summary
+        working-directory: terraform/aws
+        run: |
+          IP=$(terraform output -raw public_ip)
+          USER=$(terraform output -raw username)
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## ✅ Deployment completed
+
+          | | |
+          |---|---|
+          | **IP** | \`$IP\` |
+          | **User** | \`$USER\` |
+          | **Instance** | ${{ inputs.instance_type }} @ ${{ inputs.region }} |
+
+          Connect:
+
+          \`\`\`bash
+          ssh $USER@$IP
+          \`\`\`
+
+          Provisioning keeps running for a few minutes after boot — the MOTD
+          shows live status. Then authenticate your agents:
+
+          \`\`\`bash
+          gh auth login
+          codex login --device-auth
+          claude
+          \`\`\`
+          EOF

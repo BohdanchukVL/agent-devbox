@@ -1,0 +1,62 @@
+name: Destroy Hetzner environment
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type "destroy" to confirm deleting the server AND the workspace volume
+        required: true
+
+concurrency: hetzner-devbox
+
+jobs:
+  destroy:
+    runs-on: ubuntu-latest
+    env:
+      HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.HETZNER_S3_ACCESS_KEY }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.HETZNER_S3_SECRET_KEY }}
+      TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+      STATE_LOCATION: ${{ vars.HETZNER_STATE_LOCATION || 'fsn1' }}
+
+    steps:
+      - name: Check confirmation
+        if: inputs.confirm != 'destroy'
+        run: |
+          echo '::error::Confirmation failed — type "destroy" in the confirm field.'
+          exit 1
+
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Locate state backend
+        id: state
+        run: |
+          OWNER=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+          echo "bucket=tfstate-agent-devbox-$OWNER"                       >> "$GITHUB_OUTPUT"
+          echo "endpoint=https://$STATE_LOCATION.your-objectstorage.com" >> "$GITHUB_OUTPUT"
+
+      - name: Terraform init
+        working-directory: terraform/hetzner
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ steps.state.outputs.bucket }}" \
+            -backend-config="key=hetzner/terraform.tfstate" \
+            -backend-config="region=$STATE_LOCATION" \
+            -backend-config="endpoints={s3=\"${{ steps.state.outputs.endpoint }}\"}" \
+            -backend-config="use_path_style=true" \
+            -backend-config="skip_credentials_validation=true" \
+            -backend-config="skip_region_validation=true" \
+            -backend-config="skip_requesting_account_id=true" \
+            -backend-config="skip_metadata_api_check=true" \
+            -backend-config="skip_s3_checksum=true"
+
+      - name: Terraform destroy
+        working-directory: terraform/hetzner
+        run: terraform destroy -auto-approve
+
+      - name: Summary
+        run: echo "## 🗑️ Hetzner environment destroyed" >> "$GITHUB_STEP_SUMMARY"
