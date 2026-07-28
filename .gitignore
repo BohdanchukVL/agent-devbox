@@ -15,5 +15,8 @@ override.tf.json
 .env
 devbox.env
 
+# Rust (cli/)
+target/
+
 # OS
 .DS_Store

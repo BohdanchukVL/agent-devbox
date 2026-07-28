@@ -1,0 +1,32 @@
+[package]
+name = "devbox"
+version = "0.1.0"
+edition = "2021"
+description = "SSH-compatible remote terminal with a native clipboard and file bridge"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.5", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+russh = "0.62"
+russh-sftp = "2.3"
+arboard = "3.6"
+crossterm = "0.29"
+base64 = "0.22"
+png = "0.17"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+dirs = "6"
+rpassword = "7"
+
+# macOS: read native file-list clipboard (public.file-url), which arboard can't.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSPasteboard"] }
+objc2-foundation = { version = "0.3", features = ["NSString", "NSArray"] }
+
+[profile.release]
+lto = true
+strip = true

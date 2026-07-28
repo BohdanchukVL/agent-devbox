@@ -80,6 +80,7 @@ of creating duplicates, and destroy always knows what to delete.
 terraform/<provider> provider-specific infrastructure (server, firewall, SSH key)
 provisioning/        shared cloud-init + install scripts — identical machine on every cloud
 config/              reference for the on-machine /etc/devbox/devbox.env
+cli/                 companion devbox CLI (Rust) — local clipboard/file bridge
 docs/                per-provider setup guides
 ```
 
@@ -115,8 +116,8 @@ Provisioning logs on the machine: `/var/log/devbox-install.log`
 ## The `devbox` CLI
 
 Plain `ssh` can't move a local screenshot into an agent running on the remote
-box. The companion **`devbox` CLI** — a small Rust program (a separate project) —
-is a transparent SSH proxy that adds a local↔remote clipboard and file bridge, so
+box. The companion **`devbox` CLI** — a small Rust program in [`cli/`](cli/) — is a
+transparent SSH proxy that adds a local↔remote clipboard and file bridge, so
 pasting or dragging a file into Claude Code just works.
 
 ### Install
@@ -124,8 +125,10 @@ pasting or dragging a file into Claude Code just works.
 Needs the Rust toolchain ([rustup](https://rustup.rs)). Build it from source:
 
 ```bash
-cargo install --path path/to/devbox    # → ~/.cargo/bin/devbox
+cargo install --path cli    # → ~/.cargo/bin/devbox
 ```
+
+Full CLI docs: [`cli/README.md`](cli/README.md).
 
 ### Connect
 

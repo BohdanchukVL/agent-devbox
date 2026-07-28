@@ -1,0 +1,58 @@
+name: CLI Release
+
+# Cross-platform devbox CLI binaries, attached to the GitHub Release for a v* tag.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    working-directory: cli
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+          workspaces: cli
+
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf devbox-${{ github.ref_name }}-${{ matrix.target }}.tar.gz devbox
+          shasum -a 256 devbox-${{ github.ref_name }}-${{ matrix.target }}.tar.gz > devbox-${{ github.ref_name }}-${{ matrix.target }}.tar.gz.sha256
+
+      # softprops runs from the repo root, so files are prefixed with cli/
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            cli/target/${{ matrix.target }}/release/devbox-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
+            cli/target/${{ matrix.target }}/release/devbox-${{ github.ref_name }}-${{ matrix.target }}.tar.gz.sha256

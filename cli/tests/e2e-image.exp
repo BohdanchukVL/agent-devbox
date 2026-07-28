@@ -1,0 +1,32 @@
+#!/usr/bin/expect -f
+# E2E: clipboard image → PNG upload, scoped to the project via OSC 7 cwd.
+set timeout 25
+set bin [lindex $argv 0]
+set key [lindex $argv 1]
+proc fail {msg} { puts "\nIMG FAIL: $msg"; exit 1 }
+spawn $bin connect dev@127.0.0.1 -p 2222 -i $key
+expect {
+    -re "continue connecting" { send "yes\r"; exp_continue }
+    -re {\$ ?$} {}
+    timeout { fail "no prompt" }
+}
+
+# report a cwd via OSC 7 so devbox scopes the upload to /tmp/proj
+send "mkdir -p /tmp/proj && printf '\\033\]7;file://h/tmp/proj\\033\\\\'\r"
+expect { -re {\$ ?$} {} timeout { fail "no prompt after cd" } }
+
+# smart paste image → PNG under /tmp/proj/.devbox-inbox
+send "od -A n -t x1 -N 4 "
+send "\x07"
+send "v"
+expect {
+    "uploaded clipboard image → /tmp/proj/.devbox-inbox/" {}
+    timeout { fail "image not scoped to project inbox" }
+}
+send "\r"
+expect { "89 50 4e 47" {} timeout { fail "remote file is not a PNG (magic mismatch)" } }
+
+send "\x07"
+send "q"
+expect eof
+puts "\nIMG PASS"

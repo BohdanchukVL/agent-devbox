@@ -1,0 +1,102 @@
+#!/usr/bin/expect -f
+# E2E: devbox against a real sshd (docker). Covers: connect+TOFU, shell passthrough,
+# smart paste (text), smart paste (file → SFTP upload → path typed), OSC52 → local
+# clipboard, leader disconnect.
+set timeout 25
+set bin [lindex $argv 0]
+set key [lindex $argv 1]
+
+proc fail {msg} { puts "\nE2E FAIL: $msg"; exit 1 }
+
+# fresh known_hosts entry each run
+exec sh -c {ssh-keygen -R "\[127.0.0.1\]:2222" >/dev/null 2>&1 || true}
+
+# clipboard: plain text command first
+exec sh -c {printf "echo paste-text-ok" | pbcopy}
+
+spawn $bin connect dev@127.0.0.1 -p 2222 -i $key
+
+# TOFU prompt appears only when the host key isn't known yet
+expect {
+    -re "continue connecting" { send "yes\r"; exp_continue }
+    -re {\$ ?$} {}
+    timeout { fail "no shell prompt" }
+}
+
+# 1) plain passthrough
+send "echo marker-\$((40+2))\r"
+expect {
+    "marker-42" {}
+    timeout { fail "passthrough echo" }
+}
+
+# 2) smart paste: text
+send "\x07"
+send "v"
+expect {
+    "paste-text-ok" {}
+    timeout { fail "smart paste text not typed" }
+}
+send "\r"
+expect {
+    -re "paste-text-ok\[^'\]" {}
+    timeout { fail "smart paste text not executed" }
+}
+
+# 3) smart paste: local file path → upload → cat remote path
+exec sh -c {printf "/tmp/devbox-upload-me.txt" | pbcopy}
+send "cat "
+send "\x07"
+send "v"
+expect {
+    "uploaded" {}
+    timeout { fail "no upload status" }
+}
+send "\r"
+expect {
+    "hello-from-local-file" {}
+    timeout { fail "uploaded file content mismatch" }
+}
+
+# 4) OSC52 from remote → local clipboard
+send "printf '\\033\]52;c;b3NjNTItcGF5bG9hZA==\\007'\r"
+expect {
+    "copied" {}
+    timeout { fail "no OSC52 capture status" }
+}
+# give the clipboard write a moment, then verify
+sleep 1
+set clip [exec pbpaste]
+if {$clip ne "osc52-payload"} { fail "local clipboard = '$clip', expected 'osc52-payload'" }
+
+# 5) native paste interception: a bracketed paste of a local path uploads
+#    without the leader (simulates ⌘V / drag-and-drop of a file)
+send "cat \x1b\[200~/tmp/devbox-upload-me.txt\x1b\[201~"
+expect {
+    "uploaded" {}
+    timeout { fail "native paste of a local path was not intercepted" }
+}
+send "\r"
+expect {
+    "hello-from-local-file" {}
+    timeout { fail "intercepted paste content mismatch" }
+}
+
+# 6) a bracketed paste of ordinary text passes through unchanged
+send "echo \x1b\[200~just words here\x1b\[201~"
+send "\r"
+expect {
+    "just words here" {}
+    timeout { fail "plain paste did not pass through" }
+}
+
+# 7) leader disconnect
+send "\x07"
+send "q"
+expect {
+    "disconnecting" {}
+    timeout { fail "no disconnect status" }
+}
+expect eof
+
+puts "\nE2E PASS"
