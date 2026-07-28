@@ -6,6 +6,8 @@ Spin up a disposable cloud dev machine with AI coding agents (Codex CLI, Claude 
 Use this template → add secrets → run "Deploy to Hetzner" → ssh dev@<ip> → work
 ```
 
+![Claude Code driving a task on the left, lazygit on the right, in the devbox's auto-attached tmux session with directory-labelled tabs](docs/screenshot.png)
+
 ## What you get
 
 A fresh Ubuntu 24.04 server with:
