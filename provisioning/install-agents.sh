@@ -28,6 +28,7 @@ agent() { sudo -u "$U" -H npm install -g "$1"; }
 
 if [ "$INSTALL_CODEX" = "true" ]; then
   log "installing Codex CLI"
+  which bwrap >/dev/null 2>&1 || apt-get install -y --no-install-recommends bubblewrap || true
   agent @openai/codex
 fi
 

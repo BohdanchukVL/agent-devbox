@@ -19,9 +19,27 @@ fi
 log "installing base packages"
 apt-get update -y
 apt-get install -y --no-install-recommends \
-  git curl wget jq unzip zip ripgrep fzf tmux htop \
+  git curl wget jq unzip zip ripgrep fzf tmux htop bubblewrap \
   build-essential ca-certificates gnupg \
   python3 python3-venv python3-pip pipx
+
+log "configuring unprivileged user namespaces for bubblewrap sandbox"
+if [ -d /etc/apparmor.d ] && command -v apparmor_parser >/dev/null 2>&1; then
+  cat > /etc/apparmor.d/bwrap-userns-restrict <<'EOF'
+abi <abi/4.0>,
+include <tunables/global>
+
+profile bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+}
+EOF
+  apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict 2>/dev/null || true
+fi
+
+cat > /etc/sysctl.d/99-userns.conf <<'EOF'
+kernel.apparmor_restrict_unprivileged_userns = 0
+EOF
+sysctl -p /etc/sysctl.d/99-userns.conf 2>/dev/null || true
 
 log "installing GitHub CLI"
 install -dm 0755 /etc/apt/keyrings
