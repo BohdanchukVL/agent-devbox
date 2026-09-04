@@ -18,6 +18,9 @@ sudo -u "$U" -H npm config set prefix "$PREFIX"
 # put the prefix on PATH for login bash/zsh + tmux panes
 echo 'export PATH="$HOME/.npm-global/bin:$PATH"' > /etc/profile.d/devbox-npm.sh
 chmod 0644 /etc/profile.d/devbox-npm.sh
+# put the prefix on PATH for non-interactive zsh sessions (e.g. ssh dev@host claude ...)
+install -m 0644 -o "$U" -g "$U" /dev/null "$H/.zshenv"
+echo 'export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"' >> "$H/.zshenv"
 
 # install as dev so files land in the dev-owned prefix (npm reads ~/.npmrc)
 agent() { sudo -u "$U" -H npm install -g "$1"; }

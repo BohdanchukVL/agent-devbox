@@ -11,7 +11,11 @@ export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"
 # where your agents are running. Skips non-interactive, non-SSH, and panes
 # already inside tmux (no nesting). Escape hatch: `ssh dev@host bash`.
 if [[ $- == *i* ]] && [[ -z ${TMUX:-} ]] && [[ -n ${SSH_CONNECTION:-} ]] && command -v tmux >/dev/null; then
-  exec tmux new -A -s main
+  if [[ -d /workspace ]] && [[ -w /workspace ]]; then
+    exec tmux new -A -s main -c /workspace
+  else
+    exec tmux new -A -s main
+  fi
 fi
 
 # ── history ───────────────────────────────────────────────────────────────
@@ -65,5 +69,11 @@ command -v fdfind  >/dev/null && alias fd=fdfind          # Debian names it fdfi
 command -v nvim    >/dev/null && export EDITOR=nvim VISUAL=nvim
 
 # ── report cwd via OSC 7 so devbox scopes uploads to the project ────────────
-__devbox_osc7() { printf '\033]7;file://%s%s\033\\' "${HOST:-h}" "$PWD"; }
+__devbox_osc7() {
+  if [[ -n ${TMUX:-} ]]; then
+    printf '\033Ptmux;\033\033]7;file://%s%s\033\033\\\033\\' "${HOST:-h}" "$PWD"
+  else
+    printf '\033]7;file://%s%s\033\\' "${HOST:-h}" "$PWD"
+  fi
+}
 autoload -Uz add-zsh-hook && add-zsh-hook precmd __devbox_osc7
