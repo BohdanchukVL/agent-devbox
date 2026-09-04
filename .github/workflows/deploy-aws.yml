@@ -92,12 +92,24 @@ jobs:
         id: state
         run: |
           OWNER=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
-          BUCKET="tfstate-agent-devbox-$OWNER"
+          REPO_HASH=$(echo -n "$GITHUB_REPOSITORY" | sha256sum | cut -c1-8)
+          OLD_BUCKET="tfstate-agent-devbox-$OWNER"
+          NEW_BUCKET="tfstate-agent-devbox-$OWNER-$REPO_HASH"
+          if aws s3api head-bucket --bucket "$OLD_BUCKET" 2>/dev/null; then
+            BUCKET="$OLD_BUCKET"
+          elif aws s3api head-bucket --bucket "$NEW_BUCKET" 2>/dev/null; then
+            BUCKET="$NEW_BUCKET"
+          else
+            BUCKET="$NEW_BUCKET"
+          fi
+
           if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
             # Bucket already exists — the backend must use ITS region, which
             # may differ from the deploy region.
             LOC=$(aws s3api get-bucket-location --bucket "$BUCKET" --query LocationConstraint --output text)
-            [ "$LOC" = "None" ] || [ "$LOC" = "null" ] && LOC="us-east-1"
+            if [ "$LOC" = "None" ] || [ "$LOC" = "null" ]; then
+              LOC="us-east-1"
+            fi
           else
             LOC="${{ inputs.region }}"
             echo "Creating state bucket $BUCKET in $LOC"

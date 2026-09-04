@@ -58,9 +58,18 @@ jobs:
         id: state
         run: |
           OWNER=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
-          BUCKET="tfstate-agent-devbox-$OWNER"
-          LOC=$(aws s3api get-bucket-location --bucket "$BUCKET" --query LocationConstraint --output text)
-          [ "$LOC" = "None" ] || [ "$LOC" = "null" ] && LOC="us-east-1"
+          REPO_HASH=$(echo -n "$GITHUB_REPOSITORY" | sha256sum | cut -c1-8)
+          OLD_BUCKET="tfstate-agent-devbox-$OWNER"
+          NEW_BUCKET="tfstate-agent-devbox-$OWNER-$REPO_HASH"
+          if aws s3api head-bucket --bucket "$OLD_BUCKET" 2>/dev/null; then
+            BUCKET="$OLD_BUCKET"
+          else
+            BUCKET="$NEW_BUCKET"
+          fi
+          LOC=$(aws s3api get-bucket-location --bucket "$BUCKET" --query LocationConstraint --output text 2>/dev/null || echo "None")
+          if [ "$LOC" = "None" ] || [ "$LOC" = "null" ]; then
+            LOC="us-east-1"
+          fi
           echo "bucket=$BUCKET"     >> "$GITHUB_OUTPUT"
           echo "bucket_region=$LOC" >> "$GITHUB_OUTPUT"
 

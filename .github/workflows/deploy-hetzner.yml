@@ -81,10 +81,17 @@ jobs:
         id: state
         run: |
           OWNER=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
-          BUCKET="tfstate-agent-devbox-$OWNER"
+          REPO_HASH=$(echo -n "$GITHUB_REPOSITORY" | sha256sum | cut -c1-8)
+          OLD_BUCKET="tfstate-agent-devbox-$OWNER"
+          NEW_BUCKET="tfstate-agent-devbox-$OWNER-$REPO_HASH"
           ENDPOINT="https://$STATE_LOCATION.your-objectstorage.com"
           # Hetzner requires the client region to match the endpoint location
-          if ! aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+          if aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3api head-bucket --bucket "$OLD_BUCKET" 2>/dev/null; then
+            BUCKET="$OLD_BUCKET"
+          elif aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3api head-bucket --bucket "$NEW_BUCKET" 2>/dev/null; then
+            BUCKET="$NEW_BUCKET"
+          else
+            BUCKET="$NEW_BUCKET"
             echo "Creating state bucket $BUCKET at $ENDPOINT"
             aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3api create-bucket --bucket "$BUCKET" \
               --create-bucket-configuration "LocationConstraint=$STATE_LOCATION"

@@ -36,8 +36,17 @@ jobs:
         id: state
         run: |
           OWNER=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
-          echo "bucket=tfstate-agent-devbox-$OWNER"                       >> "$GITHUB_OUTPUT"
-          echo "endpoint=https://$STATE_LOCATION.your-objectstorage.com" >> "$GITHUB_OUTPUT"
+          REPO_HASH=$(echo -n "$GITHUB_REPOSITORY" | sha256sum | cut -c1-8)
+          OLD_BUCKET="tfstate-agent-devbox-$OWNER"
+          NEW_BUCKET="tfstate-agent-devbox-$OWNER-$REPO_HASH"
+          ENDPOINT="https://$STATE_LOCATION.your-objectstorage.com"
+          if aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3api head-bucket --bucket "$OLD_BUCKET" 2>/dev/null; then
+            BUCKET="$OLD_BUCKET"
+          else
+            BUCKET="$NEW_BUCKET"
+          fi
+          echo "bucket=$BUCKET"     >> "$GITHUB_OUTPUT"
+          echo "endpoint=$ENDPOINT" >> "$GITHUB_OUTPUT"
 
       - name: Terraform init
         working-directory: terraform/hetzner

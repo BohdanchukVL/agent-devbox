@@ -1,4 +1,7 @@
 locals {
+  is_arm   = can(regex("^(t4g|c7g|m7g|r7g|c6g|m6g|r6g|a1)\\.", var.instance_type))
+  ami_arch = local.is_arm ? "arm64" : "amd64"
+
   user_data = templatefile("${path.module}/../../provisioning/cloud-init.yaml", {
     username            = var.username
     ssh_public_key      = var.ssh_public_key
@@ -28,7 +31,7 @@ data "aws_ami" "ubuntu" {
 
   filter {
     name   = "name"
-    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"]
+    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-${local.ami_arch}-server-*"]
   }
 
   filter {
