@@ -171,7 +171,15 @@ async fn authenticate(handle: &mut Handle<ClientHandler>, cfg: &Resolved) -> Res
     for path in &cfg.identity_files {
         let key = match load_secret_key(path, None) {
             Ok(k) => k,
-            Err(_) => continue, // encrypted or unreadable — skip silently
+            Err(e) => {
+                if path.exists() {
+                    eprintln!(
+                        "[devbox] skipping identity file {} ({e}; add to ssh-agent if passphrase-protected)",
+                        path.display()
+                    );
+                }
+                continue;
+            }
         };
         let hash = handle
             .best_supported_rsa_hash()

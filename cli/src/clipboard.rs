@@ -83,14 +83,27 @@ fn classify_paths(paths: Vec<PathBuf>) -> Option<ClipContent> {
     None
 }
 
-/// terminals escape dragged paths differently: `\ ` (backslash-space), quoted, or file:// URI
+/// terminals escape dragged paths differently: backslash-escaped characters (spaces,
+/// parentheses, brackets, etc.), quoted, or file:// URI
 fn unescape_dnd(s: &str) -> String {
     let s = s.trim_matches('\'').trim_matches('"');
     if let Some(rest) = s.strip_prefix("file://") {
         let path = rest.strip_prefix("localhost").unwrap_or(rest);
         return percent_decode(path);
     }
-    s.replace("\\ ", " ")
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(&next) = chars.peek() {
+                out.push(next);
+                chars.next();
+                continue;
+            }
+        }
+        out.push(c);
+    }
+    out
 }
 
 fn percent_decode(s: &str) -> String {
@@ -187,6 +200,14 @@ mod tests {
     fn file_uri_decoded() {
         assert_eq!(unescape_dnd("file:///tmp/a%20b.png"), "/tmp/a b.png");
         assert_eq!(unescape_dnd("/tmp/a\\ b.png"), "/tmp/a b.png");
+        assert_eq!(
+            unescape_dnd("/tmp/Screenshot\\ \\(1\\).png"),
+            "/tmp/Screenshot (1).png"
+        );
+        assert_eq!(
+            unescape_dnd("/tmp/File\\ \\[v1\\].txt"),
+            "/tmp/File [v1].txt"
+        );
     }
 
     #[test]

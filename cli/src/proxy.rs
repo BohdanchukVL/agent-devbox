@@ -93,6 +93,8 @@ pub async fn run(cfg: Resolved) -> Result<()> {
     // clipboard actions queued behind the "ask" confirmation prompt
     let mut pending: std::collections::VecDeque<PendingConfirm> = std::collections::VecDeque::new();
 
+    const PASTE_ESCAPE_TIMEOUT: Duration = Duration::from_millis(25);
+
     loop {
         let leader_deadline = match state {
             InputState::Pending(at) => {
@@ -111,72 +113,18 @@ pub async fn run(cfg: Resolved) -> Result<()> {
             chunk = stdin_rx.recv() => {
                 let Some(chunk) = chunk else { break };
                 for event in paste_scanner.feed(&chunk) {
-                let bytes = match event {
-                    PasteEvent::Paste(body) => {
-                        handle_paste(&mut ssh, &cfg, body, &mut pending, &mut state, &mut stdout).await;
-                        continue;
-                    }
-                    PasteEvent::Pass(b) => b,
-                };
-                let mut pass = Vec::with_capacity(bytes.len());
-                for b in bytes {
-                    match state {
-                        InputState::Normal => {
-                            if b == cfg.leader {
-                                state = InputState::Pending(std::time::Instant::now());
-                            } else {
-                                pass.push(b);
-                            }
-                        }
-                        InputState::Pending(_) => {
-                            state = InputState::Normal;
-                            match b {
-                                b'v' | b'V' => {
-                                    if !pass.is_empty() { ssh.shell.data(&pass[..]).await.ok(); pass.clear(); }
-                                    smart_paste(&mut ssh, &cfg, &mut stdout, scanner.bracketed_paste).await;
-                                }
-                                b'q' | b'Q' => {
-                                    status(&mut stdout, "disconnecting…");
-                                    return finish(ssh).await;
-                                }
-                                b'?' | b'h' => help(&mut stdout, cfg.leader),
-                                _ if b == cfg.leader => pass.push(b), // leader twice → literal
-                                other => { pass.push(cfg.leader); pass.push(other); }
-                            }
-                        }
-                        InputState::Confirm => {
-                            let allowed = b == b'y' || b == b'Y';
-                            if let Some(action) = pending.pop_front() {
-                                match action {
-                                    PendingConfirm::Write(payload) => {
-                                        if allowed {
-                                            apply_clip(&mut stdout, &payload, false);
-                                        } else {
-                                            status(&mut stdout, "remote clipboard write denied");
-                                        }
-                                    }
-                                    PendingConfirm::Paste { paths, raw } => {
-                                        if allowed {
-                                            upload_and_type(&mut ssh, &cfg, &paths, &mut stdout).await;
-                                        } else {
-                                            send_framed(&mut ssh, &raw).await;
-                                        }
-                                    }
-                                }
-                            }
-                            state = match pending.front() {
-                                Some(next) => {
-                                    prompt_confirm(&mut stdout, next);
-                                    InputState::Confirm
-                                }
-                                None => InputState::Normal,
-                            };
-                        }
+                    if !dispatch_event(event, &mut ssh, &cfg, scanner.bracketed_paste, &mut pending, &mut state, &mut stdout).await? {
+                        return finish(ssh).await;
                     }
                 }
-                if !pass.is_empty() {
-                    ssh.shell.data(&pass[..]).await.context("send input")?;
-                }
+            }
+
+            // ── paste scanner timeout: pending bytes (e.g. solitary ESC) belong to stream ──
+            _ = tokio::time::sleep(PASTE_ESCAPE_TIMEOUT), if paste_scanner.has_pending() => {
+                if let Some(event) = paste_scanner.flush() {
+                    if !dispatch_event(event, &mut ssh, &cfg, scanner.bracketed_paste, &mut pending, &mut state, &mut stdout).await? {
+                        return finish(ssh).await;
+                    }
                 }
             }
 
@@ -225,6 +173,90 @@ pub async fn run(cfg: Resolved) -> Result<()> {
     }
 
     finish(ssh).await
+}
+
+async fn dispatch_event(
+    event: PasteEvent,
+    ssh: &mut Ssh,
+    cfg: &Resolved,
+    bracketed_paste: bool,
+    pending: &mut std::collections::VecDeque<PendingConfirm>,
+    state: &mut InputState,
+    stdout: &mut impl Write,
+) -> Result<bool> {
+    let bytes = match event {
+        PasteEvent::Paste(body) => {
+            handle_paste(ssh, cfg, body, pending, state, stdout).await;
+            return Ok(true);
+        }
+        PasteEvent::Pass(b) => b,
+    };
+    let mut pass = Vec::with_capacity(bytes.len());
+    for b in bytes {
+        match state {
+            InputState::Normal => {
+                if b == cfg.leader {
+                    *state = InputState::Pending(std::time::Instant::now());
+                } else {
+                    pass.push(b);
+                }
+            }
+            InputState::Pending(_) => {
+                *state = InputState::Normal;
+                match b {
+                    b'v' | b'V' => {
+                        if !pass.is_empty() {
+                            ssh.shell.data(&pass[..]).await.ok();
+                            pass.clear();
+                        }
+                        smart_paste(ssh, cfg, stdout, bracketed_paste).await;
+                    }
+                    b'q' | b'Q' => {
+                        status(stdout, "disconnecting…");
+                        return Ok(false);
+                    }
+                    b'?' | b'h' => help(stdout, cfg.leader),
+                    _ if b == cfg.leader => pass.push(b),
+                    other => {
+                        pass.push(cfg.leader);
+                        pass.push(other);
+                    }
+                }
+            }
+            InputState::Confirm => {
+                let allowed = b == b'y' || b == b'Y';
+                if let Some(action) = pending.pop_front() {
+                    match action {
+                        PendingConfirm::Write(payload) => {
+                            if allowed {
+                                apply_clip(stdout, &payload, false);
+                            } else {
+                                status(stdout, "remote clipboard write denied");
+                            }
+                        }
+                        PendingConfirm::Paste { paths, raw } => {
+                            if allowed {
+                                upload_and_type(ssh, cfg, &paths, stdout).await;
+                            } else {
+                                send_framed(ssh, &raw).await;
+                            }
+                        }
+                    }
+                }
+                *state = match pending.front() {
+                    Some(next) => {
+                        prompt_confirm(stdout, next);
+                        InputState::Confirm
+                    }
+                    None => InputState::Normal,
+                };
+            }
+        }
+    }
+    if !pass.is_empty() {
+        ssh.shell.data(&pass[..]).await.context("send input")?;
+    }
+    Ok(true)
 }
 
 async fn finish(ssh: Ssh) -> Result<()> {

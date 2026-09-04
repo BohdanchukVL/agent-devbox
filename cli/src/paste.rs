@@ -88,6 +88,26 @@ impl PasteScanner {
         events
     }
 
+    /// Whether there are bytes buffered in `pend` waiting for a potential marker match.
+    pub fn has_pending(&self) -> bool {
+        !self.pend.is_empty()
+    }
+
+    /// Flush any partially matched bytes that are waiting in `pend`.
+    /// Called when an idle timeout elapses (e.g. solitary ESC key).
+    pub fn flush(&mut self) -> Option<PasteEvent> {
+        if self.pend.is_empty() {
+            return None;
+        }
+        let bytes = std::mem::take(&mut self.pend);
+        if self.in_paste {
+            self.body.extend_from_slice(&bytes);
+            None
+        } else {
+            Some(PasteEvent::Pass(bytes))
+        }
+    }
+
     fn release(&mut self, bytes: &[u8], pass: &mut Vec<u8>) {
         if self.in_paste {
             self.body.extend_from_slice(bytes);
@@ -164,5 +184,14 @@ mod tests {
             s.feed(b"\x1b[201~x"),
             vec![PasteEvent::Pass(b"\x1b[201~x".to_vec())]
         );
+    }
+
+    #[test]
+    fn solitary_esc_flushes() {
+        let mut s = PasteScanner::new();
+        assert_eq!(s.feed(b"\x1b"), vec![]);
+        assert!(s.has_pending());
+        assert_eq!(s.flush(), Some(PasteEvent::Pass(vec![0x1b])));
+        assert!(!s.has_pending());
     }
 }
