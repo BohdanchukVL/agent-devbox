@@ -17,7 +17,7 @@ log() { echo "[devbox $(date -u +%H:%M:%S)] $*"; }
 install -d -o "$U" -g "$U" "$PREFIX"
 sudo -u "$U" -H npm config set prefix "$PREFIX"
 # put the prefix on PATH for login bash/zsh + tmux panes
-echo 'export PATH="$HOME/.npm-global/bin:$PATH"' > /etc/profile.d/devbox-npm.sh
+echo 'export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"' > /etc/profile.d/devbox-npm.sh
 chmod 0644 /etc/profile.d/devbox-npm.sh
 # put the prefix on PATH for non-interactive zsh sessions (e.g. ssh dev@host claude ...)
 install -m 0644 -o "$U" -g "$U" /dev/null "$H/.zshenv"
@@ -44,6 +44,7 @@ fi
 
 if [ "${INSTALL_ANTIGRAVITY:-false}" = "true" ]; then
   log "installing Antigravity CLI (agy)"
+  install -d -o "$U" -g "$U" "$H/.local/bin"
   # standalone Go binary → ~/.local/bin/agy (not npm); tolerate a failed fetch
   sudo -u "$U" -H bash -c 'curl -fsSL https://antigravity.google/cli/install.sh | bash' \
     || log "antigravity install failed (skipping)"

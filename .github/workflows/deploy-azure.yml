@@ -38,7 +38,7 @@ on:
       install_antigravity:
         description: Install Google Antigravity CLI (agy)
         type: boolean
-        default: false
+        default: true
       install_browser:
         description: Install headless browser (Playwright/Chromium) for web testing
         type: boolean

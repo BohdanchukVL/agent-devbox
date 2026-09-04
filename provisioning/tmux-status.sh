@@ -169,22 +169,60 @@ EOF
         fi
     fi
 
-    # 3. Agent selection
+    # 3. Antigravity CLI (agy)
+    agy_active=""
+    agy_dir="$HOME/.gemini/antigravity-cli"
+    [ -d "$agy_dir" ] || agy_dir="$HOME/.antigravity"
+    if [ -d "$agy_dir" ] && [ -f "$agy_dir/history.jsonl" ]; then
+        agy_info=$(tail -n 100 "$agy_dir/history.jsonl" | jq -s -r --arg d "$proj_dir" --arg raw "$dir" '
+          [.[] | select(.workspace == $d or .workspace == $raw)] | last // empty |
+          "\(.conversationId) \((.timestamp // 0) / 1000 | floor)"
+        ' 2>/dev/null)
+        if [ -n "$agy_info" ]; then
+            read -r agy_conv_id agy_time <<EOF
+$agy_info
+EOF
+            agy_busy=""
+            [ -f "$agy_dir/presence/${agy_conv_id}.lock" ] && agy_busy="⚡"
+
+            agy_pct=""
+            agy_tok_str=""
+            trans_file="$agy_dir/brain/$agy_conv_id/.system_generated/logs/transcript.jsonl"
+            if [ -f "$trans_file" ]; then
+                bytes=$(stat -c %s "$trans_file" 2>/dev/null || stat -f %z "$trans_file" 2>/dev/null || echo 0)
+                if [ "$bytes" -gt 0 ] 2>/dev/null; then
+                    approx_tok=$(( bytes / 4 ))
+                    max_tok=1000000
+                    agy_pct=$(( (approx_tok * 100) / max_tok ))
+                    agy_tok_str="$(fmt_tokens "$approx_tok")/$(fmt_tokens "$max_tok")"
+                fi
+            fi
+            agy_active=1
+        fi
+    fi
+
+    # 4. Agent selection: prioritize active/busy agent, otherwise newest
     chosen=""
-    if [ -n "$claude_active" ] && [ -n "$codex_active" ]; then
-        if [ -n "$cl_busy" ] && [ -z "$cx_busy" ]; then
-            chosen="claude"
-        elif [ -n "$cx_busy" ] && [ -z "$cl_busy" ]; then
-            chosen="codex"
-        elif [ "${cx_time:-0}" -gt "${cl_time:-0}" ]; then
-            chosen="codex"
-        else
+    if [ -n "$cl_busy" ]; then
+        chosen="claude"
+    elif [ -n "$cx_busy" ]; then
+        chosen="codex"
+    elif [ -n "$agy_busy" ]; then
+        chosen="agy"
+    else
+        max_t=-1
+        if [ -n "$claude_active" ] && [ "${cl_time:-0}" -gt "$max_t" ]; then
+            max_t="${cl_time:-0}"
             chosen="claude"
         fi
-    elif [ -n "$claude_active" ]; then
-        chosen="claude"
-    elif [ -n "$codex_active" ]; then
-        chosen="codex"
+        if [ -n "$codex_active" ] && [ "${cx_time:-0}" -gt "$max_t" ]; then
+            max_t="${cx_time:-0}"
+            chosen="codex"
+        fi
+        if [ -n "$agy_active" ] && [ "${agy_time:-0}" -gt "$max_t" ]; then
+            max_t="${agy_time:-0}"
+            chosen="agy"
+        fi
     fi
 
     case "$chosen" in
@@ -201,6 +239,13 @@ EOF
             out="#[fg=colour75,bold]codex${cx_busy}#[default]"
             [ -n "$bar_str" ] && out="$out $bar_str"
             [ -n "$cx_tok_str" ] && out="$out #[fg=colour246]$cx_tok_str#[default]"
+            printf ' %s' "$out"
+            ;;
+        agy)
+            bar_str=$(render_bar "$agy_pct" 6)
+            out="#[fg=colour141,bold]agy${agy_busy}#[default]"
+            [ -n "$bar_str" ] && out="$out $bar_str"
+            [ -n "$agy_tok_str" ] && out="$out #[fg=colour246]$agy_tok_str#[default]"
             printf ' %s' "$out"
             ;;
     esac

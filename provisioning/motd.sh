@@ -5,7 +5,8 @@
 # agents live in the dev user's npm prefix, not on root's PATH — look there too
 . /etc/devbox/devbox.env 2>/dev/null || true
 DEV_BIN="/home/${DEVBOX_USER:-dev}/.npm-global/bin"
-have() { command -v "$1" >/dev/null 2>&1 || [ -x "$DEV_BIN/$1" ]; }
+LOCAL_BIN="/home/${DEVBOX_USER:-dev}/.local/bin"
+have() { command -v "$1" >/dev/null 2>&1 || [ -x "$DEV_BIN/$1" ] || [ -x "$LOCAL_BIN/$1" ]; }
 
 if [ -e /etc/devbox/.provisioned ]; then
   docker_status="not installed"
@@ -18,16 +19,19 @@ if [ -e /etc/devbox/.provisioned ]; then
   fi
   codex_status=$(have codex && echo "installed" || echo "not installed")
   claude_status=$(have claude && echo "installed" || echo "not installed")
+  agy_status=$(have agy && echo "installed" || echo "not installed")
   browser_status=$(have playwright && echo "installed" || echo "not installed")
 elif [ -e /etc/devbox/.failed ]; then
   docker_status=$(have docker && echo "ready" || echo "failed")
   codex_status=$(have codex && echo "installed" || echo "failed")
   claude_status=$(have claude && echo "installed" || echo "failed")
+  agy_status=$(have agy && echo "installed" || echo "failed")
   browser_status=$(have playwright && echo "installed" || echo "failed")
 else
   docker_status="provisioning..."
   codex_status="provisioning..."
   claude_status="provisioning..."
+  agy_status="provisioning..."
   browser_status="provisioning..."
 fi
 
@@ -40,6 +44,7 @@ line "Workspace: /workspace"
 line "Docker: $docker_status"
 line "Codex: $codex_status"
 line "Claude Code: $claude_status"
+line "Antigravity: $agy_status"
 line "Browser: $browser_status"
 line ""
 line "Next steps:"
@@ -48,6 +53,7 @@ line "  git config --global user.name ..."
 line "  git config --global user.email ..."
 line "  codex login --device-auth"
 line "  claude"
+line "  agy"
 if [ -e /etc/devbox/.failed ]; then
   line ""
   line "⚠ Provisioning failed:"

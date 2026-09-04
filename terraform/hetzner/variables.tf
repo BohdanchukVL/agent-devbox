@@ -56,7 +56,7 @@ variable "install_opencode" {
 variable "install_antigravity" {
   description = "Google Antigravity CLI (agy)"
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "install_browser" {

@@ -67,6 +67,7 @@ alias g=git
 command -v lazygit >/dev/null && alias lg=lazygit
 command -v fdfind  >/dev/null && alias fd=fdfind          # Debian names it fdfind
 command -v nvim    >/dev/null && export EDITOR=nvim VISUAL=nvim
+command -v agy     >/dev/null && alias antigravity=agy
 
 # ── report cwd via OSC 7 so devbox scopes uploads to the project ────────────
 __devbox_osc7() {
