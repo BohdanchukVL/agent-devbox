@@ -19,6 +19,11 @@ if [ -e /etc/devbox/.provisioned ]; then
   codex_status=$(have codex && echo "installed" || echo "not installed")
   claude_status=$(have claude && echo "installed" || echo "not installed")
   browser_status=$(have playwright && echo "installed" || echo "not installed")
+elif [ -e /etc/devbox/.failed ]; then
+  docker_status=$(have docker && echo "ready" || echo "failed")
+  codex_status=$(have codex && echo "installed" || echo "failed")
+  claude_status=$(have claude && echo "installed" || echo "failed")
+  browser_status=$(have playwright && echo "installed" || echo "failed")
 else
   docker_status="provisioning..."
   codex_status="provisioning..."
@@ -43,7 +48,11 @@ line "  git config --global user.name ..."
 line "  git config --global user.email ..."
 line "  codex login --device-auth"
 line "  claude"
-if [ ! -e /etc/devbox/.provisioned ]; then
+if [ -e /etc/devbox/.failed ]; then
+  line ""
+  line "⚠ Provisioning failed:"
+  line "  tail -f /var/log/devbox-install.log"
+elif [ ! -e /etc/devbox/.provisioned ]; then
   line ""
   line "Provisioning still running:"
   line "  tail -f /var/log/devbox-install.log"

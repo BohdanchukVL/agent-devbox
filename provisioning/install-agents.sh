@@ -4,6 +4,7 @@
 # ("no write permission to npm prefix"). Runs once as root via cloud-init after
 # install-base.sh; flags come from /etc/devbox/devbox.env. Idempotent.
 set -euo pipefail
+trap 'touch /etc/devbox/.failed 2>/dev/null || true' ERR
 
 . /etc/devbox/devbox.env
 U="$DEVBOX_USER"

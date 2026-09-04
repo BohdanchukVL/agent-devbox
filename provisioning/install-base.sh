@@ -2,11 +2,19 @@
 # Base toolchain. Runs once as root via cloud-init; flags come from
 # /etc/devbox/devbox.env. Must stay idempotent — re-running is safe.
 set -euo pipefail
+trap 'touch /etc/devbox/.failed 2>/dev/null || true' ERR
 export DEBIAN_FRONTEND=noninteractive
 
 . /etc/devbox/devbox.env
 
 log() { echo "[devbox $(date -u +%H:%M:%S)] $*"; }
+
+log "ensuring universe repository"
+if ! grep -q "universe" /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null; then
+  apt-get update -y
+  apt-get install -y --no-install-recommends software-properties-common || true
+  add-apt-repository -y universe || true
+fi
 
 log "installing base packages"
 apt-get update -y

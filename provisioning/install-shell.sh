@@ -4,6 +4,7 @@
 # cloud-init; every step is tolerant so a single missing tool never fails the
 # box, and ~/.zshrc guards each tool with `command -v`.
 set -uo pipefail
+trap 'touch /etc/devbox/.failed 2>/dev/null || true' ERR
 export DEBIAN_FRONTEND=noninteractive
 
 . /etc/devbox/devbox.env
@@ -44,7 +45,10 @@ fi
 if ! command -v lazygit >/dev/null 2>&1; then
   log "installing lazygit"
   case "$arch" in amd64) la=x86_64 ;; arm64) la=arm64 ;; *) la= ;; esac
-  ver=$(curl -fsSL https://api.github.com/repos/jesseduffield/lazygit/releases/latest | jq -r .tag_name 2>/dev/null | sed 's/^v//')
+  ver=$(curl -sIL https://github.com/jesseduffield/lazygit/releases/latest | grep -i '^location:' | tail -n 1 | sed -E 's/.*\/v?([0-9.]+).*/\1/' | tr -d '\r\n')
+  if [ -z "$ver" ]; then
+    ver=$(curl -fsSL https://api.github.com/repos/jesseduffield/lazygit/releases/latest 2>/dev/null | jq -r .tag_name 2>/dev/null | sed 's/^v//')
+  fi
   if [ -n "$la" ] && [ -n "$ver" ] && [ "$ver" != "null" ]; then
     curl -fsSL "https://github.com/jesseduffield/lazygit/releases/download/v${ver}/lazygit_${ver}_Linux_${la}.tar.gz" \
       | tar xz -C /usr/local/bin lazygit || true
