@@ -46,8 +46,9 @@ if [ "${INSTALL_ANTIGRAVITY:-false}" = "true" ]; then
   log "installing Antigravity CLI (agy)"
   install -d -o "$U" -g "$U" "$H/.local/bin"
   # standalone Go binary → ~/.local/bin/agy (not npm); tolerate a failed fetch
-  sudo -u "$U" -H bash -c 'curl -fsSL https://antigravity.google/cli/install.sh | bash' \
+  sudo -u "$U" -H bash -c 'export PATH="$HOME/.local/bin:$PATH"; curl -fsSL https://antigravity.google/cli/install.sh | bash' \
     || log "antigravity install failed (skipping)"
+  [ -f "$H/.local/bin/agy" ] && ln -sf "$H/.local/bin/agy" /usr/local/bin/agy || true
 fi
 
 log "agent install done"
