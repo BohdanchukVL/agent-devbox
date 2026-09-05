@@ -66,25 +66,54 @@ ai)
     dir="${2:-$PWD}"
     [ -z "$dir" ] && dir="$PWD"
     pane_cmd="${3:-}"
-    win_id="${4:-}"
+    pane_pid="${4:-}"
+    win_id="${5:-}"
 
     git_root=$(cd "$dir" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)
     [ -n "$git_root" ] && proj_dir="$git_root" || proj_dir="$dir"
 
-    # Determine which agent (if any) is running in the current pane or window
+    # Identify the command running in the active pane, checking child processes if wrapper (like node/python/bash/sh)
+    full_cmd="$pane_cmd"
+    if [ -n "$pane_pid" ]; then
+        child_cmd=""
+        if [ -d "/proc" ]; then
+            child_pid=$(pgrep -P "$pane_pid" 2>/dev/null | head -n 1)
+            [ -n "$child_pid" ] && child_cmd=$(tr '\0' ' ' < "/proc/$child_pid/cmdline" 2>/dev/null)
+        fi
+        if [ -z "$child_cmd" ]; then
+            child_pids=$(pgrep -P "$pane_pid" 2>/dev/null)
+            [ -n "$child_pids" ] && child_cmd=$(ps -o args= -p $child_pids 2>/dev/null)
+        fi
+        [ -n "$child_cmd" ] && full_cmd="$pane_cmd $child_cmd"
+    fi
+
     running_agent=""
-    case "$pane_cmd" in
+    case "$full_cmd" in
         *agy*|*antigravity*) running_agent="agy" ;;
-        *claude*)            running_agent="claude" ;;
         *codex*)             running_agent="codex" ;;
+        *claude*)            running_agent="claude" ;;
     esac
 
+    # If active pane is not an agent, check other panes in the current window
     if [ -z "$running_agent" ] && [ -n "$win_id" ]; then
-        win_cmds=$(tmux list-panes -t "$win_id" -F "#{pane_current_command}" 2>/dev/null)
-        case "$win_cmds" in
+        win_panes_info=$(tmux list-panes -t "$win_id" -F "#{pane_pid} #{pane_current_command}" 2>/dev/null)
+        all_win_cmds=""
+        while read -r p_pid p_cmd; do
+            [ -z "$p_pid" ] && continue
+            all_win_cmds="$all_win_cmds $p_cmd"
+            c_pids=$(pgrep -P "$p_pid" 2>/dev/null)
+            if [ -n "$c_pids" ]; then
+                c_args=$(ps -o args= -p $c_pids 2>/dev/null)
+                all_win_cmds="$all_win_cmds $c_args"
+            fi
+        done <<EOF
+$win_panes_info
+EOF
+
+        case "$all_win_cmds" in
             *agy*|*antigravity*) running_agent="agy" ;;
-            *claude*)            running_agent="claude" ;;
             *codex*)             running_agent="codex" ;;
+            *claude*)            running_agent="claude" ;;
         esac
     fi
 
@@ -101,10 +130,14 @@ ai)
         cl_cost_str=""
         cl_busy=""
 
+        active_sess_id=""
         for s in "$HOME/.claude/sessions/"*.json "$HOME/.claude-cc/sessions/"*.json; do
             [ -f "$s" ] || continue
-            if grep -q "$proj_dir" "$s" 2>/dev/null && grep -q '"status":"busy"' "$s" 2>/dev/null; then
-                cl_busy="⚡"
+            if grep -q "$proj_dir" "$s" 2>/dev/null; then
+                active_sess_id=$(jq -r '.sessionId // empty' "$s" 2>/dev/null)
+                if grep -q '"status":"busy"' "$s" 2>/dev/null; then
+                    cl_busy="⚡"
+                fi
                 break
             fi
         done
@@ -126,11 +159,20 @@ EOF
                 slug=$(printf '%s' "$proj_dir" | tr '/' '-')
                 session_file=""
                 for base in "$HOME/.claude/projects" "$HOME/.claude-cc/projects"; do
-                    if [ "$cl_sess_id" != "-" ] && [ -f "$base/$slug/$cl_sess_id.jsonl" ]; then
+                    if [ -n "$active_sess_id" ] && [ -f "$base/$slug/$active_sess_id.jsonl" ]; then
+                        session_file="$base/$slug/$active_sess_id.jsonl"
+                        break
+                    elif [ "$cl_sess_id" != "-" ] && [ -f "$base/$slug/$cl_sess_id.jsonl" ]; then
                         session_file="$base/$slug/$cl_sess_id.jsonl"
                         break
                     fi
                 done
+                if [ -z "$session_file" ]; then
+                    for base in "$HOME/.claude/projects" "$HOME/.claude-cc/projects"; do
+                        latest=$(ls -td "$base/$slug"/*.jsonl 2>/dev/null | head -n 1)
+                        [ -n "$latest" ] && session_file="$latest" && break
+                    done
+                fi
 
                 if [ -n "$session_file" ]; then
                     tok_data=$(tail -n 25 "$session_file" 2>/dev/null | jq -s -r '
@@ -176,7 +218,15 @@ EOF
         cx_pct=""
         cx_tok_str=""
         if [ -d "$HOME/.codex/sessions" ]; then
-            latest_codex=$(ls -td "$HOME/.codex/sessions"/*/*/*/*.jsonl 2>/dev/null | head -n 1)
+            latest_codex=""
+            for f in $(ls -td "$HOME/.codex/sessions"/*/*/*/*.jsonl 2>/dev/null | head -n 15); do
+                if head -n 25 "$f" 2>/dev/null | grep -q "\"cwd\":\"$proj_dir\"" || head -n 25 "$f" 2>/dev/null | grep -q "\"cwd\":\"$dir\""; then
+                    latest_codex="$f"
+                    break
+                fi
+            done
+            [ -z "$latest_codex" ] && latest_codex=$(ls -td "$HOME/.codex/sessions"/*/*/*/*.jsonl 2>/dev/null | head -n 1)
+
             if [ -n "$latest_codex" ] && [ -f "$latest_codex" ]; then
                 cx_data=$(tail -n 25 "$latest_codex" | jq -s -r '
                   [.[] | select(.payload.type=="token_count" and .payload.rate_limits != null)] | last // empty |
@@ -189,7 +239,7 @@ EOF
                     read -r cx_used cx_tok cx_win <<EOF
 $cx_data
 EOF
-                    if ! tail -n 5 "$latest_codex" 2>/dev/null | grep -q '"type":"task_complete"'; then
+                    if ! tail -n 5 "$latest_codex" 2>/dev/null | grep -q 'task_complete'; then
                         cx_busy="⚡"
                     fi
                     cx_pct=$(awk -v u="$cx_used" 'BEGIN { printf "%d", u + 0.5 }')
