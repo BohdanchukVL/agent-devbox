@@ -6,7 +6,7 @@
 #   tmux-status load        → 1/5/15-minute load average
 render_bar() {
     _pct="$1"
-    _width="${2:-6}"
+    _width="${2:-${AI_BAR_WIDTH:-8}}"
     [ -z "$_pct" ] && return
     [ "$_pct" -lt 0 ] 2>/dev/null && _pct=0
     [ "$_pct" -gt 100 ] 2>/dev/null && _pct=100
@@ -227,7 +227,7 @@ EOF
 
     case "$chosen" in
         claude)
-            bar_str=$(render_bar "$cl_pct" 6)
+            bar_str=$(render_bar "$cl_pct")
             out="#[fg=colour209,bold]claude${cl_busy}#[default]"
             [ -n "$bar_str" ] && out="$out $bar_str"
             [ -n "$cl_tok_str" ] && out="$out #[fg=colour246]$cl_tok_str#[default]"
@@ -235,14 +235,14 @@ EOF
             printf ' %s' "$out"
             ;;
         codex)
-            bar_str=$(render_bar "$cx_pct" 6)
+            bar_str=$(render_bar "$cx_pct")
             out="#[fg=colour75,bold]codex${cx_busy}#[default]"
             [ -n "$bar_str" ] && out="$out $bar_str"
             [ -n "$cx_tok_str" ] && out="$out #[fg=colour246]$cx_tok_str#[default]"
             printf ' %s' "$out"
             ;;
         agy)
-            bar_str=$(render_bar "$agy_pct" 6)
+            bar_str=$(render_bar "$agy_pct")
             out="#[fg=colour141,bold]agy${agy_busy}#[default]"
             [ -n "$bar_str" ] && out="$out $bar_str"
             [ -n "$agy_tok_str" ] && out="$out #[fg=colour246]$agy_tok_str#[default]"
