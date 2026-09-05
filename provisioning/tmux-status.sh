@@ -23,8 +23,8 @@ render_bar() {
     [ "$_filled" -gt "$_width" ] && _filled="$_width"
     _empty=$(( _width - _filled ))
 
-    _char_fill="${AI_BAR_FILL:-▬}"
-    _char_empty="${AI_BAR_EMPTY:-▬}"
+    _char_fill="${AI_BAR_FILL:-■}"
+    _char_empty="${AI_BAR_EMPTY:-■}"
 
     _bar=""
     _i=0
