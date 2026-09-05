@@ -92,6 +92,7 @@ ai)
     fi
 
     running_agent=""
+    agent_pane_pid="$pane_pid"
     case "$full_cmd" in
         *agy*|*antigravity*) running_agent="agy" ;;
         *codex*)             running_agent="codex" ;;
@@ -101,24 +102,22 @@ ai)
     # If active pane is not an agent, check other panes in the current window
     if [ -z "$running_agent" ] && [ -n "$win_id" ]; then
         win_panes_info=$(tmux list-panes -t "$win_id" -F "#{pane_pid} #{pane_current_command}" 2>/dev/null)
-        all_win_cmds=""
         while read -r p_pid p_cmd; do
             [ -z "$p_pid" ] && continue
-            all_win_cmds="$all_win_cmds $p_cmd"
+            cur_cmds="$p_cmd"
             c_pids=$(pgrep -P "$p_pid" 2>/dev/null)
             if [ -n "$c_pids" ]; then
                 c_args=$(ps -o args= -p $c_pids 2>/dev/null)
-                all_win_cmds="$all_win_cmds $c_args"
+                cur_cmds="$cur_cmds $c_args"
             fi
+            case "$cur_cmds" in
+                *agy*|*antigravity*) running_agent="agy"; agent_pane_pid="$p_pid"; break ;;
+                *codex*)             running_agent="codex"; agent_pane_pid="$p_pid"; break ;;
+                *claude*)            running_agent="claude"; agent_pane_pid="$p_pid"; break ;;
+            esac
         done <<EOF
 $win_panes_info
 EOF
-
-        case "$all_win_cmds" in
-            *agy*|*antigravity*) running_agent="agy" ;;
-            *codex*)             running_agent="codex" ;;
-            *claude*)            running_agent="claude" ;;
-        esac
     fi
 
     # If no agent is running in this window, exit cleanly — do not show stale history
@@ -222,37 +221,111 @@ EOF
         cx_pct=""
         cx_tok_str=""
         if [ -d "$HOME/.codex/sessions" ]; then
-            latest_codex=""
-            for f in $(ls -td "$HOME/.codex/sessions"/*/*/*/*.jsonl 2>/dev/null | head -n 15); do
-                if head -n 25 "$f" 2>/dev/null | grep -q "\"cwd\":\"$proj_dir\"" || head -n 25 "$f" 2>/dev/null | grep -q "\"cwd\":\"$dir\""; then
-                    latest_codex="$f"
-                    break
-                fi
-            done
-            [ -z "$latest_codex" ] && latest_codex=$(ls -td "$HOME/.codex/sessions"/*/*/*/*.jsonl 2>/dev/null | head -n 1)
+            active_codex=""
+            # 1. Try finding open session file from agent pane process tree via /proc
+            if [ -n "$agent_pane_pid" ]; then
+                pids="$agent_pane_pid"
+                for child in $(pgrep -P "$agent_pane_pid" 2>/dev/null); do
+                    pids="$pids $child"
+                    for gchild in $(pgrep -P "$child" 2>/dev/null); do
+                        pids="$pids $gchild"
+                    done
+                done
+                for p in $pids; do
+                    if [ -d "/proc/$p/fd" ]; then
+                        s=$(readlink /proc/$p/fd/* 2>/dev/null | grep "/\.codex/sessions/.*\.jsonl$" | head -n 1)
+                        if [ -n "$s" ] && [ -f "$s" ]; then
+                            active_codex="$s"
+                            break
+                        fi
+                        lock=$(readlink /proc/$p/fd/* 2>/dev/null | grep "/thread-writer-locks/.*\.lock$" | head -n 1)
+                        if [ -n "$lock" ]; then
+                            th_id=$(basename "$lock" .lock)
+                            s=$(find "$HOME/.codex/sessions" -name "*${th_id}*.jsonl" 2>/dev/null | head -n 1)
+                            if [ -n "$s" ] && [ -f "$s" ]; then
+                                active_codex="$s"
+                                break
+                            fi
+                        fi
+                    fi
+                done
+            fi
 
-            if [ -n "$latest_codex" ] && [ -f "$latest_codex" ]; then
-                cx_data=$(tail -n 25 "$latest_codex" | jq -s -r '
-                  [.[] | select(.payload.type=="token_count" and .payload.rate_limits != null)] | last // empty |
-                  .payload.rate_limits.primary.used_percent as $used |
-                  .payload.info.last_token_usage.total_tokens as $last_tok |
-                  .payload.info.model_context_window as $ctx_win |
-                  "\($used) \($last_tok) \($ctx_win)"
+            # 2. Fallback: match recent sessions for current project
+            if [ -z "$active_codex" ]; then
+                for f in $(ls -td "$HOME/.codex/sessions"/*/*/*/*.jsonl 2>/dev/null | head -n 5); do
+                    if head -n 25 "$f" 2>/dev/null | grep -q "\"cwd\":\"$proj_dir\"" || head -n 25 "$f" 2>/dev/null | grep -q "\"cwd\":\"$dir\""; then
+                        active_codex="$f"
+                        break
+                    fi
+                done
+            fi
+
+            now=$(date +%s)
+            cx_used=""
+            cx_tok=""
+            cx_win=""
+
+            # Extract rate limits & tokens from active session if present
+            if [ -n "$active_codex" ] && [ -f "$active_codex" ]; then
+                turn_state=$(tail -n 35 "$active_codex" 2>/dev/null | jq -s -r '
+                  [.[] | select(.payload.type=="task_started" or .payload.type=="task_complete")] | last | .payload.type // empty
+                ' 2>/dev/null)
+                [ "$turn_state" = "task_started" ] && cx_busy="⚡"
+
+                cx_data=$(tail -n 35 "$active_codex" 2>/dev/null | jq -s -r --argjson now "$now" '
+                  [.[] | select(.payload.type=="token_count" and .payload.rate_limits != null)] | last // null |
+                  if . == null then empty else
+                    (.payload.rate_limits.primary // {}) as $p |
+                    (.payload.rate_limits.secondary // {}) as $s |
+                    (if ($p.resets_at != null and $p.resets_at < $now) then 0 else ($p.used_percent // 0) end) as $p_used |
+                    (if ($s.resets_at != null and $s.resets_at < $now) then 0 else ($s.used_percent // 0) end) as $s_used |
+                    ([$p_used, $s_used] | max) as $max_used |
+                    (.payload.info.last_token_usage.total_tokens // 0) as $tok |
+                    (.payload.info.model_context_window // 258400) as $win |
+                    "\($max_used) \($tok) \($win)"
+                  end
                 ' 2>/dev/null)
                 if [ -n "$cx_data" ]; then
                     read -r cx_used cx_tok cx_win <<EOF
 $cx_data
 EOF
-                    if ! tail -n 5 "$latest_codex" 2>/dev/null | grep -q 'task_complete'; then
-                        cx_busy="⚡"
-                    fi
-                    cx_pct=$(awk -v u="$cx_used" 'BEGIN { printf "%d", u + 0.5 }')
-                    cx_tok_str="$(fmt_tokens "$cx_tok")/$(fmt_tokens "$cx_win")"
                 fi
+            fi
+
+            # Fallback for rate limits on launch before first prompt in a new session:
+            # Rate limits are account-wide, so get freshest limits from most recent session across the system.
+            if [ -z "$cx_used" ]; then
+                for f in $(ls -td "$HOME/.codex/sessions"/*/*/*/*.jsonl 2>/dev/null | head -n 5); do
+                    global_rl=$(tail -n 35 "$f" 2>/dev/null | jq -s -r --argjson now "$now" '
+                      [.[] | select(.payload.type=="token_count" and .payload.rate_limits != null)] | last // null |
+                      if . == null then empty else
+                        (.payload.rate_limits.primary // {}) as $p |
+                        (.payload.rate_limits.secondary // {}) as $s |
+                        (if ($p.resets_at != null and $p.resets_at < $now) then 0 else ($p.used_percent // 0) end) as $p_used |
+                        (if ($s.resets_at != null and $s.resets_at < $now) then 0 else ($s.used_percent // 0) end) as $s_used |
+                        ([$p_used, $s_used] | max) as $max_used |
+                        "\($max_used)"
+                      end
+                    ' 2>/dev/null)
+                    if [ -n "$global_rl" ]; then
+                        cx_used="$global_rl"
+                        cx_tok=0
+                        cx_win=258400
+                        break
+                    fi
+                done
+            fi
+
+            if [ -n "$cx_used" ]; then
+                cx_pct=$(awk -v u="$cx_used" 'BEGIN { printf "%d", u + 0.5 }')
+                [ -z "$cx_tok" ] && cx_tok=0
+                [ -z "$cx_win" ] && cx_win=258400
+                cx_tok_str="$(fmt_tokens "$cx_tok")/$(fmt_tokens "$cx_win")"
             fi
         fi
 
-        [ -z "$cx_pct" ] && cx_pct=0 && cx_tok_str="0/200k"
+        [ -z "$cx_pct" ] && cx_pct=0 && cx_tok_str="0/258k"
 
         bar_str=$(render_bar "$cx_pct")
         out="#[fg=colour75,bold]codex${cx_busy}#[default]"
