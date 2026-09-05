@@ -6,7 +6,7 @@
 #   tmux-status load        → 1/5/15-minute load average
 render_bar() {
     _pct="$1"
-    _width="${2:-${AI_BAR_WIDTH:-8}}"
+    _width="${2:-${AI_BAR_WIDTH:-10}}"
     [ -z "$_pct" ] && return
     [ "$_pct" -lt 0 ] 2>/dev/null && _pct=0
     [ "$_pct" -gt 100 ] 2>/dev/null && _pct=100
@@ -23,13 +23,17 @@ render_bar() {
     [ "$_filled" -gt "$_width" ] && _filled="$_width"
     _empty=$(( _width - _filled ))
 
+    _char_fill="${AI_BAR_FILL:-▬}"
+    _char_empty="${AI_BAR_EMPTY:-▬}"
+
     _bar=""
     _i=0
-    while [ "$_i" -lt "$_filled" ]; do _bar="${_bar}█"; _i=$((_i + 1)); done
+    while [ "$_i" -lt "$_filled" ]; do _bar="${_bar}${_char_fill}"; _i=$((_i + 1)); done
+    _bar_empty=""
     _i=0
-    while [ "$_i" -lt "$_empty" ]; do _bar="${_bar}░"; _i=$((_i + 1)); done
+    while [ "$_i" -lt "$_empty" ]; do _bar_empty="${_bar_empty}${_char_empty}"; _i=$((_i + 1)); done
 
-    printf '#[fg=colour243][%s%s#[fg=colour243]] %s%d%%#[default]' "$_col" "$_bar" "$_col" "$_pct"
+    printf '#[fg=colour243][%s%s#[fg=colour238]%s#[fg=colour243]] %s%d%%#[default]' "$_col" "$_bar" "$_bar_empty" "$_col" "$_pct"
 }
 
 fmt_tokens() {
