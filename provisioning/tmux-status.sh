@@ -66,101 +66,118 @@ ai)
     dir="${2:-$PWD}"
     [ -z "$dir" ] && dir="$PWD"
     pane_cmd="${3:-}"
-    case "$pane_cmd" in
-        *agy*|*antigravity*) pane_agent="agy" ;;
-        *claude*)            pane_agent="claude" ;;
-        *codex*)             pane_agent="codex" ;;
-        *)                   pane_agent="" ;;
-    esac
+    win_id="${4:-}"
+
     git_root=$(cd "$dir" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)
     [ -n "$git_root" ] && proj_dir="$git_root" || proj_dir="$dir"
 
-    # 1. Claude Code
-    claude_active=""
-    claude_json="$HOME/.claude.json"
-    [ -f "$claude_json" ] || claude_json="$HOME/.claude-cc/.claude.json"
+    # Determine which agent (if any) is running in the current pane or window
+    running_agent=""
+    case "$pane_cmd" in
+        *agy*|*antigravity*) running_agent="agy" ;;
+        *claude*)            running_agent="claude" ;;
+        *codex*)             running_agent="codex" ;;
+    esac
 
-    if [ -f "$claude_json" ]; then
-        claude_data=$(jq -r --arg d "$proj_dir" --arg raw "$dir" '
-          (.projects[$d] // .projects[$raw] // empty) |
-          [
-            ((.lastCost // 0) * 100 | floor / 100),
-            (.lastSessionId // "-"),
-            ((.lastStartTime // 0) / 1000 | floor),
-            ((.lastTotalInputTokens // 0) + (.lastTotalCacheReadInputTokens // 0) + (.lastTotalCacheCreationInputTokens // 0))
-          ] | @tsv
-        ' "$claude_json" 2>/dev/null)
+    if [ -z "$running_agent" ] && [ -n "$win_id" ]; then
+        win_cmds=$(tmux list-panes -t "$win_id" -F "#{pane_current_command}" 2>/dev/null)
+        case "$win_cmds" in
+            *agy*|*antigravity*) running_agent="agy" ;;
+            *claude*)            running_agent="claude" ;;
+            *codex*)             running_agent="codex" ;;
+        esac
+    fi
 
-        if [ -n "$claude_data" ]; then
-            IFS="$(printf '\t')" read -r cl_cost cl_sess_id cl_time cl_total_tokens <<EOF
+    # If no agent is running in this window, exit cleanly — do not show stale history
+    [ -z "$running_agent" ] && exit 0
+
+    case "$running_agent" in
+    claude)
+        claude_json="$HOME/.claude.json"
+        [ -f "$claude_json" ] || claude_json="$HOME/.claude-cc/.claude.json"
+        cl_cost=""
+        cl_pct=""
+        cl_tok_str=""
+        cl_cost_str=""
+        cl_busy=""
+
+        for s in "$HOME/.claude/sessions/"*.json "$HOME/.claude-cc/sessions/"*.json; do
+            [ -f "$s" ] || continue
+            if grep -q "$proj_dir" "$s" 2>/dev/null && grep -q '"status":"busy"' "$s" 2>/dev/null; then
+                cl_busy="⚡"
+                break
+            fi
+        done
+
+        if [ -f "$claude_json" ]; then
+            claude_data=$(jq -r --arg d "$proj_dir" --arg raw "$dir" '
+              (.projects[$d] // .projects[$raw] // empty) |
+              [
+                ((.lastCost // 0) * 100 | floor / 100),
+                (.lastSessionId // "-"),
+                ((.lastTotalInputTokens // 0) + (.lastTotalCacheReadInputTokens // 0) + (.lastTotalCacheCreationInputTokens // 0))
+              ] | @tsv
+            ' "$claude_json" 2>/dev/null)
+
+            if [ -n "$claude_data" ]; then
+                IFS="$(printf '\t')" read -r cl_cost cl_sess_id cl_total_tokens <<EOF
 $claude_data
 EOF
-            cl_busy=""
-            [ "$pane_agent" = "claude" ] && cl_busy="⚡"
-            for s in "$HOME/.claude/sessions/"*.json "$HOME/.claude-cc/sessions/"*.json; do
-                [ -f "$s" ] || continue
-                if grep -q "$proj_dir" "$s" 2>/dev/null && grep -q '"status":"busy"' "$s" 2>/dev/null; then
-                    cl_busy="⚡"
-                    break
-                fi
-            done
+                slug=$(printf '%s' "$proj_dir" | tr '/' '-')
+                session_file=""
+                for base in "$HOME/.claude/projects" "$HOME/.claude-cc/projects"; do
+                    if [ "$cl_sess_id" != "-" ] && [ -f "$base/$slug/$cl_sess_id.jsonl" ]; then
+                        session_file="$base/$slug/$cl_sess_id.jsonl"
+                        break
+                    fi
+                done
 
-            cl_pct=""
-            cl_tok_str=""
-            slug=$(printf '%s' "$proj_dir" | tr '/' '-')
-            session_file=""
-            for base in "$HOME/.claude/projects" "$HOME/.claude-cc/projects"; do
-                if [ "$cl_sess_id" != "-" ] && [ -f "$base/$slug/$cl_sess_id.jsonl" ]; then
-                    session_file="$base/$slug/$cl_sess_id.jsonl"
-                    break
-                fi
-            done
-
-            if [ -n "$session_file" ]; then
-                tok_data=$(tail -n 25 "$session_file" 2>/dev/null | jq -s -r '
-                  [.[] | select(.message.usage != null)] | last // empty |
-                  ((.message.usage.input_tokens // 0) + (.message.usage.cache_read_input_tokens // 0) + (.message.usage.cache_creation_input_tokens // 0)) as $tok |
-                  "\($tok) \(.message.model // "-")"
-                ' 2>/dev/null)
-                if [ -n "$tok_data" ]; then
-                    read -r cur_tok model <<EOF
+                if [ -n "$session_file" ]; then
+                    tok_data=$(tail -n 25 "$session_file" 2>/dev/null | jq -s -r '
+                      [.[] | select(.message.usage != null)] | last // empty |
+                      ((.message.usage.input_tokens // 0) + (.message.usage.cache_read_input_tokens // 0) + (.message.usage.cache_creation_input_tokens // 0)) as $tok |
+                      "\($tok) \(.message.model // "-")"
+                    ' 2>/dev/null)
+                    if [ -n "$tok_data" ]; then
+                        read -r cur_tok model <<EOF
 $tok_data
 EOF
-                    if [ "$cur_tok" -gt 0 ] 2>/dev/null; then
-                        max_tok=200000
-                        case "$model" in
-                            *1m*|*1M*) max_tok=1000000 ;;
-                            *) [ "$cur_tok" -gt 200000 ] 2>/dev/null && max_tok=1000000 ;;
-                        esac
-                        cl_pct=$(( (cur_tok * 100) / max_tok ))
-                        cl_tok_str="$(fmt_tokens "$cur_tok")/$(fmt_tokens "$max_tok")"
+                        if [ "$cur_tok" -gt 0 ] 2>/dev/null; then
+                            max_tok=200000
+                            case "$model" in
+                                *1m*|*1M*) max_tok=1000000 ;;
+                                *) [ "$cur_tok" -gt 200000 ] 2>/dev/null && max_tok=1000000 ;;
+                            esac
+                            cl_pct=$(( (cur_tok * 100) / max_tok ))
+                            cl_tok_str="$(fmt_tokens "$cur_tok")/$(fmt_tokens "$max_tok")"
+                        fi
                     fi
                 fi
-            fi
 
-            cl_cost_str=""
-            if [ -n "$cl_cost" ] && [ "$cl_cost" != "0" ] && [ "$cl_cost" != "-" ]; then
-                cost_fmt=$(awk -v c="$cl_cost" 'BEGIN { printf "%.2f", c }' 2>/dev/null)
-                [ -n "$cost_fmt" ] && cl_cost_str="\$${cost_fmt}"
+                if [ -n "$cl_cost" ] && [ "$cl_cost" != "0" ] && [ "$cl_cost" != "-" ]; then
+                    cost_fmt=$(awk -v c="$cl_cost" 'BEGIN { printf "%.2f", c }' 2>/dev/null)
+                    [ -n "$cost_fmt" ] && cl_cost_str="\$${cost_fmt}"
+                fi
             fi
-            claude_active=1
         fi
-    fi
 
-    if [ "$pane_agent" = "claude" ] && [ -z "$claude_active" ]; then
-        claude_active=1
-        cl_busy="⚡"
-        cl_pct=0
-        cl_tok_str="0/200k"
-        cl_time=$(date +%s)
-    fi
+        [ -z "$cl_pct" ] && cl_pct=0 && cl_tok_str="0/200k"
 
-    # 2. Codex CLI
-    codex_active=""
-    if [ -d "$HOME/.codex/sessions" ]; then
-        latest_codex=$(ls -td "$HOME/.codex/sessions"/*/*/*/*.jsonl 2>/dev/null | head -n 1)
-        if [ -n "$latest_codex" ] && [ -f "$latest_codex" ]; then
-            if head -n 25 "$latest_codex" 2>/dev/null | grep -q "\"cwd\":\"$proj_dir\"" || head -n 25 "$latest_codex" 2>/dev/null | grep -q "\"cwd\":\"$dir\"" || [ "$pane_agent" = "codex" ]; then
+        bar_str=$(render_bar "$cl_pct")
+        out="#[fg=colour209,bold]claude${cl_busy}#[default]"
+        [ -n "$bar_str" ] && out="$out $bar_str"
+        [ -n "$cl_tok_str" ] && out="$out #[fg=colour246]$cl_tok_str#[default]"
+        [ -n "$cl_cost_str" ] && out="$out #[fg=colour180]$cl_cost_str#[default]"
+        printf ' %s' "$out"
+        ;;
+
+    codex)
+        cx_busy=""
+        cx_pct=""
+        cx_tok_str=""
+        if [ -d "$HOME/.codex/sessions" ]; then
+            latest_codex=$(ls -td "$HOME/.codex/sessions"/*/*/*/*.jsonl 2>/dev/null | head -n 1)
+            if [ -n "$latest_codex" ] && [ -f "$latest_codex" ]; then
                 cx_data=$(tail -n 25 "$latest_codex" | jq -s -r '
                   [.[] | select(.payload.type=="token_count" and .payload.rate_limits != null)] | last // empty |
                   .payload.rate_limits.primary.used_percent as $used |
@@ -172,64 +189,47 @@ EOF
                     read -r cx_used cx_tok cx_win <<EOF
 $cx_data
 EOF
-                    cx_busy=""
-                    if [ "$pane_agent" = "codex" ] || ! tail -n 5 "$latest_codex" 2>/dev/null | grep -q '"type":"task_complete"'; then
+                    if ! tail -n 5 "$latest_codex" 2>/dev/null | grep -q '"type":"task_complete"'; then
                         cx_busy="⚡"
                     fi
                     cx_pct=$(awk -v u="$cx_used" 'BEGIN { printf "%d", u + 0.5 }')
                     cx_tok_str="$(fmt_tokens "$cx_tok")/$(fmt_tokens "$cx_win")"
-                    cx_time=$(stat -c %Y "$latest_codex" 2>/dev/null || stat -f %m "$latest_codex" 2>/dev/null || echo 0)
-                    codex_active=1
                 fi
             fi
         fi
-    fi
 
-    if [ "$pane_agent" = "codex" ] && [ -z "$codex_active" ]; then
-        codex_active=1
-        cx_busy="⚡"
-        cx_pct=0
-        cx_tok_str="0/200k"
-        cx_time=$(date +%s)
-    fi
+        [ -z "$cx_pct" ] && cx_pct=0 && cx_tok_str="0/200k"
 
-    # 3. Antigravity CLI (agy)
-    agy_active=""
-    agy_busy=""
-    agy_dir=""
-    for d in "$HOME/.gemini/antigravity-cli" "$HOME/.antigravity" "$HOME/.config/antigravity-cli"; do
-        if [ -d "$d" ]; then
-            agy_dir="$d"
-            break
-        fi
-    done
+        bar_str=$(render_bar "$cx_pct")
+        out="#[fg=colour75,bold]codex${cx_busy}#[default]"
+        [ -n "$bar_str" ] && out="$out $bar_str"
+        [ -n "$cx_tok_str" ] && out="$out #[fg=colour246]$cx_tok_str#[default]"
+        printf ' %s' "$out"
+        ;;
 
-    if [ -n "$agy_dir" ]; then
+    agy)
+        agy_dir=""
+        for d in "$HOME/.gemini/antigravity-cli" "$HOME/.antigravity" "$HOME/.config/antigravity-cli"; do
+            if [ -d "$d" ]; then
+                agy_dir="$d"
+                break
+            fi
+        done
+
+        agy_busy=""
+        agy_pct=""
+        agy_tok_str=""
         agy_conv_id=""
-        agy_time=0
 
-        # Check history.jsonl for conversation associated with this workspace
-        if [ -f "$agy_dir/history.jsonl" ]; then
-            agy_info=$(tail -n 100 "$agy_dir/history.jsonl" | jq -s -r --arg d "$proj_dir" --arg raw "$dir" '
-              [.[] | select((.workspace == $d or .workspace == $raw or ($d != "" and ((.workspace // "") | endswith($d)))) and .conversationId != null)] | last // empty |
-              "\(.conversationId) \((.timestamp // 0) / 1000 | floor)"
-            ' 2>/dev/null)
-            if [ -n "$agy_info" ]; then
-                read -r agy_conv_id agy_time <<EOF
-$agy_info
-EOF
-                if [ -n "$agy_conv_id" ] && [ -f "$agy_dir/presence/${agy_conv_id}.lock" ]; then
-                    agy_busy="⚡"
-                fi
-                agy_active=1
+        if [ -n "$agy_dir" ]; then
+            if [ -f "$agy_dir/history.jsonl" ]; then
+                agy_info=$(tail -n 100 "$agy_dir/history.jsonl" | jq -s -r --arg d "$proj_dir" --arg raw "$dir" '
+                  [.[] | select((.workspace == $d or .workspace == $raw or ($d != "" and ((.workspace // "") | endswith($d)))) and .conversationId != null)] | last // empty |
+                  "\(.conversationId)"
+                ' 2>/dev/null)
+                [ -n "$agy_info" ] && agy_conv_id="$agy_info"
             fi
-        fi
 
-        # If current pane is running agy, prioritize it
-        if [ "$pane_agent" = "agy" ]; then
-            agy_active=1
-            agy_busy="⚡"
-            [ -z "$agy_time" ] || [ "$agy_time" -eq 0 ] && agy_time=$(date +%s)
             if [ -z "$agy_conv_id" ]; then
                 latest_lock=$(ls -t "$agy_dir/presence/"*.lock 2>/dev/null | head -n 1)
                 [ -n "$latest_lock" ] && agy_conv_id=$(basename "$latest_lock" .lock)
@@ -238,79 +238,37 @@ EOF
                     [ -n "$latest_brain" ] && agy_conv_id=$(basename "$(dirname "$(dirname "$(dirname "$latest_brain")")")")
                 fi
             fi
-        fi
 
-        agy_pct=""
-        agy_tok_str=""
-        if [ -n "$agy_conv_id" ]; then
-            trans_file="$agy_dir/brain/$agy_conv_id/.system_generated/logs/transcript.jsonl"
-            if [ -f "$trans_file" ]; then
-                bytes=$(stat -c %s "$trans_file" 2>/dev/null || stat -f %z "$trans_file" 2>/dev/null || echo 0)
-                if [ "$bytes" -gt 0 ] 2>/dev/null; then
-                    approx_tok=$(( bytes / 4 ))
-                    max_tok=1000000
-                    agy_pct=$(( (approx_tok * 100) / max_tok ))
-                    agy_tok_str="$(fmt_tokens "$approx_tok")/$(fmt_tokens "$max_tok")"
+            if [ -n "$agy_conv_id" ]; then
+                trans_file="$agy_dir/brain/$agy_conv_id/.system_generated/logs/transcript.jsonl"
+                if [ -f "$trans_file" ]; then
+                    bytes=$(stat -c %s "$trans_file" 2>/dev/null || stat -f %z "$trans_file" 2>/dev/null || echo 0)
+                    if [ "$bytes" -gt 0 ] 2>/dev/null; then
+                        approx_tok=$(( bytes / 4 ))
+                        max_tok=1000000
+                        agy_pct=$(( (approx_tok * 100) / max_tok ))
+                        agy_tok_str="$(fmt_tokens "$approx_tok")/$(fmt_tokens "$max_tok")"
+
+                        agy_state=$(tail -n 1 "$trans_file" 2>/dev/null | jq -r '
+                          if .type == "USER_INPUT" then "busy"
+                          elif .type == "PLANNER_RESPONSE" and (.tool_calls != null and (.tool_calls | length > 0)) then "busy"
+                          elif .type != "PLANNER_RESPONSE" then "busy"
+                          else "idle" end
+                        ' 2>/dev/null)
+                        [ "$agy_state" = "busy" ] && agy_busy="⚡"
+                    fi
                 fi
             fi
         fi
 
-        # Default for active agy session without tokens yet
-        if [ -n "$agy_active" ] && [ -z "$agy_pct" ]; then
-            agy_pct=0
-            agy_tok_str="0/1M"
-        fi
-    fi
+        [ -z "$agy_pct" ] && agy_pct=0 && agy_tok_str="0/1M"
 
-    # 4. Agent selection: prioritize currently running pane command, then busy, then newest
-    chosen=""
-    if [ -n "$pane_agent" ]; then
-        chosen="$pane_agent"
-    elif [ -n "$cl_busy" ]; then
-        chosen="claude"
-    elif [ -n "$cx_busy" ]; then
-        chosen="codex"
-    elif [ -n "$agy_busy" ]; then
-        chosen="agy"
-    else
-        max_t=-1
-        if [ -n "$claude_active" ] && [ "${cl_time:-0}" -gt "$max_t" ]; then
-            max_t="${cl_time:-0}"
-            chosen="claude"
-        fi
-        if [ -n "$codex_active" ] && [ "${cx_time:-0}" -gt "$max_t" ]; then
-            max_t="${cx_time:-0}"
-            chosen="codex"
-        fi
-        if [ -n "$agy_active" ] && [ "${agy_time:-0}" -gt "$max_t" ]; then
-            max_t="${agy_time:-0}"
-            chosen="agy"
-        fi
-    fi
-
-    case "$chosen" in
-        claude)
-            bar_str=$(render_bar "$cl_pct")
-            out="#[fg=colour209,bold]claude${cl_busy}#[default]"
-            [ -n "$bar_str" ] && out="$out $bar_str"
-            [ -n "$cl_tok_str" ] && out="$out #[fg=colour246]$cl_tok_str#[default]"
-            [ -n "$cl_cost_str" ] && out="$out #[fg=colour180]$cl_cost_str#[default]"
-            printf ' %s' "$out"
-            ;;
-        codex)
-            bar_str=$(render_bar "$cx_pct")
-            out="#[fg=colour75,bold]codex${cx_busy}#[default]"
-            [ -n "$bar_str" ] && out="$out $bar_str"
-            [ -n "$cx_tok_str" ] && out="$out #[fg=colour246]$cx_tok_str#[default]"
-            printf ' %s' "$out"
-            ;;
-        agy)
-            bar_str=$(render_bar "$agy_pct")
-            out="#[fg=colour141,bold]agy${agy_busy}#[default]"
-            [ -n "$bar_str" ] && out="$out $bar_str"
-            [ -n "$agy_tok_str" ] && out="$out #[fg=colour246]$agy_tok_str#[default]"
-            printf ' %s' "$out"
-            ;;
+        bar_str=$(render_bar "$agy_pct")
+        out="#[fg=colour141,bold]agy${agy_busy}#[default]"
+        [ -n "$bar_str" ] && out="$out $bar_str"
+        [ -n "$agy_tok_str" ] && out="$out #[fg=colour246]$agy_tok_str#[default]"
+        printf ' %s' "$out"
+        ;;
     esac
     ;;
 load)
