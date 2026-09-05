@@ -65,6 +65,13 @@ ai)
     command -v jq >/dev/null 2>&1 || exit 0
     dir="${2:-$PWD}"
     [ -z "$dir" ] && dir="$PWD"
+    pane_cmd="${3:-}"
+    case "$pane_cmd" in
+        *agy*|*antigravity*) pane_agent="agy" ;;
+        *claude*)            pane_agent="claude" ;;
+        *codex*)             pane_agent="codex" ;;
+        *)                   pane_agent="" ;;
+    esac
     git_root=$(cd "$dir" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)
     [ -n "$git_root" ] && proj_dir="$git_root" || proj_dir="$dir"
 
@@ -89,6 +96,7 @@ ai)
 $claude_data
 EOF
             cl_busy=""
+            [ "$pane_agent" = "claude" ] && cl_busy="⚡"
             for s in "$HOME/.claude/sessions/"*.json "$HOME/.claude-cc/sessions/"*.json; do
                 [ -f "$s" ] || continue
                 if grep -q "$proj_dir" "$s" 2>/dev/null && grep -q '"status":"busy"' "$s" 2>/dev/null; then
@@ -139,12 +147,20 @@ EOF
         fi
     fi
 
+    if [ "$pane_agent" = "claude" ] && [ -z "$claude_active" ]; then
+        claude_active=1
+        cl_busy="⚡"
+        cl_pct=0
+        cl_tok_str="0/200k"
+        cl_time=$(date +%s)
+    fi
+
     # 2. Codex CLI
     codex_active=""
     if [ -d "$HOME/.codex/sessions" ]; then
         latest_codex=$(ls -td "$HOME/.codex/sessions"/*/*/*/*.jsonl 2>/dev/null | head -n 1)
         if [ -n "$latest_codex" ] && [ -f "$latest_codex" ]; then
-            if head -n 25 "$latest_codex" 2>/dev/null | grep -q "\"cwd\":\"$proj_dir\"" || head -n 25 "$latest_codex" 2>/dev/null | grep -q "\"cwd\":\"$dir\""; then
+            if head -n 25 "$latest_codex" 2>/dev/null | grep -q "\"cwd\":\"$proj_dir\"" || head -n 25 "$latest_codex" 2>/dev/null | grep -q "\"cwd\":\"$dir\"" || [ "$pane_agent" = "codex" ]; then
                 cx_data=$(tail -n 25 "$latest_codex" | jq -s -r '
                   [.[] | select(.payload.type=="token_count" and .payload.rate_limits != null)] | last // empty |
                   .payload.rate_limits.primary.used_percent as $used |
@@ -157,7 +173,7 @@ EOF
 $cx_data
 EOF
                     cx_busy=""
-                    if ! tail -n 5 "$latest_codex" 2>/dev/null | grep -q '"type":"task_complete"'; then
+                    if [ "$pane_agent" = "codex" ] || ! tail -n 5 "$latest_codex" 2>/dev/null | grep -q '"type":"task_complete"'; then
                         cx_busy="⚡"
                     fi
                     cx_pct=$(awk -v u="$cx_used" 'BEGIN { printf "%d", u + 0.5 }')
@@ -169,24 +185,64 @@ EOF
         fi
     fi
 
+    if [ "$pane_agent" = "codex" ] && [ -z "$codex_active" ]; then
+        codex_active=1
+        cx_busy="⚡"
+        cx_pct=0
+        cx_tok_str="0/200k"
+        cx_time=$(date +%s)
+    fi
+
     # 3. Antigravity CLI (agy)
     agy_active=""
-    agy_dir="$HOME/.gemini/antigravity-cli"
-    [ -d "$agy_dir" ] || agy_dir="$HOME/.antigravity"
-    if [ -d "$agy_dir" ] && [ -f "$agy_dir/history.jsonl" ]; then
-        agy_info=$(tail -n 100 "$agy_dir/history.jsonl" | jq -s -r --arg d "$proj_dir" --arg raw "$dir" '
-          [.[] | select(.workspace == $d or .workspace == $raw)] | last // empty |
-          "\(.conversationId) \((.timestamp // 0) / 1000 | floor)"
-        ' 2>/dev/null)
-        if [ -n "$agy_info" ]; then
-            read -r agy_conv_id agy_time <<EOF
+    agy_busy=""
+    agy_dir=""
+    for d in "$HOME/.gemini/antigravity-cli" "$HOME/.antigravity" "$HOME/.config/antigravity-cli"; do
+        if [ -d "$d" ]; then
+            agy_dir="$d"
+            break
+        fi
+    done
+
+    if [ -n "$agy_dir" ]; then
+        agy_conv_id=""
+        agy_time=0
+
+        # Check history.jsonl for conversation associated with this workspace
+        if [ -f "$agy_dir/history.jsonl" ]; then
+            agy_info=$(tail -n 100 "$agy_dir/history.jsonl" | jq -s -r --arg d "$proj_dir" --arg raw "$dir" '
+              [.[] | select((.workspace == $d or .workspace == $raw or ($d != "" and ((.workspace // "") | endswith($d)))) and .conversationId != null)] | last // empty |
+              "\(.conversationId) \((.timestamp // 0) / 1000 | floor)"
+            ' 2>/dev/null)
+            if [ -n "$agy_info" ]; then
+                read -r agy_conv_id agy_time <<EOF
 $agy_info
 EOF
-            agy_busy=""
-            [ -f "$agy_dir/presence/${agy_conv_id}.lock" ] && agy_busy="⚡"
+                if [ -n "$agy_conv_id" ] && [ -f "$agy_dir/presence/${agy_conv_id}.lock" ]; then
+                    agy_busy="⚡"
+                fi
+                agy_active=1
+            fi
+        fi
 
-            agy_pct=""
-            agy_tok_str=""
+        # If current pane is running agy, prioritize it
+        if [ "$pane_agent" = "agy" ]; then
+            agy_active=1
+            agy_busy="⚡"
+            [ -z "$agy_time" ] || [ "$agy_time" -eq 0 ] && agy_time=$(date +%s)
+            if [ -z "$agy_conv_id" ]; then
+                latest_lock=$(ls -t "$agy_dir/presence/"*.lock 2>/dev/null | head -n 1)
+                [ -n "$latest_lock" ] && agy_conv_id=$(basename "$latest_lock" .lock)
+                if [ -z "$agy_conv_id" ]; then
+                    latest_brain=$(ls -td "$agy_dir/brain"/*/.system_generated/logs/transcript.jsonl 2>/dev/null | head -n 1)
+                    [ -n "$latest_brain" ] && agy_conv_id=$(basename "$(dirname "$(dirname "$(dirname "$latest_brain")")")")
+                fi
+            fi
+        fi
+
+        agy_pct=""
+        agy_tok_str=""
+        if [ -n "$agy_conv_id" ]; then
             trans_file="$agy_dir/brain/$agy_conv_id/.system_generated/logs/transcript.jsonl"
             if [ -f "$trans_file" ]; then
                 bytes=$(stat -c %s "$trans_file" 2>/dev/null || stat -f %z "$trans_file" 2>/dev/null || echo 0)
@@ -197,13 +253,20 @@ EOF
                     agy_tok_str="$(fmt_tokens "$approx_tok")/$(fmt_tokens "$max_tok")"
                 fi
             fi
-            agy_active=1
+        fi
+
+        # Default for active agy session without tokens yet
+        if [ -n "$agy_active" ] && [ -z "$agy_pct" ]; then
+            agy_pct=0
+            agy_tok_str="0/1M"
         fi
     fi
 
-    # 4. Agent selection: prioritize active/busy agent, otherwise newest
+    # 4. Agent selection: prioritize currently running pane command, then busy, then newest
     chosen=""
-    if [ -n "$cl_busy" ]; then
+    if [ -n "$pane_agent" ]; then
+        chosen="$pane_agent"
+    elif [ -n "$cl_busy" ]; then
         chosen="claude"
     elif [ -n "$cx_busy" ]; then
         chosen="codex"
