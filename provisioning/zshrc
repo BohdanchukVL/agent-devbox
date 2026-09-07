@@ -11,6 +11,7 @@ export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"
 # where your agents are running. Skips non-interactive, non-SSH, and panes
 # already inside tmux (no nesting). Escape hatch: `ssh dev@host bash`.
 if [[ $- == *i* ]] && [[ -z ${TMUX:-} ]] && [[ -n ${SSH_CONNECTION:-} ]] && command -v tmux >/dev/null; then
+  [[ "$TERM" == "xterm" ]] && export TERM="xterm-256color"
   if [[ -d /workspace ]] && [[ -w /workspace ]]; then
     exec tmux new -A -s main -c /workspace
   else
