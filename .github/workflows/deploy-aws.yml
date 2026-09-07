@@ -134,13 +134,16 @@ jobs:
 
       - name: Configure SSH ingress CIDRs
         if: inputs.ssh_allowed_cidrs != ''
+        env:
+          SSH_ALLOWED_CIDRS: ${{ inputs.ssh_allowed_cidrs }}
         run: |
-          JSON_CIDRS=$(echo "${{ inputs.ssh_allowed_cidrs }}" | tr ',' '\n' | sed 's/^[ \t]*//;s/[ \t]*$//' | jq -R . | jq -s . -c)
+          JSON_CIDRS=$(echo "$SSH_ALLOWED_CIDRS" | tr ',' '\n' | sed 's/^[ \t]*//;s/[ \t]*$//' | jq -R . | jq -s . -c)
           echo "TF_VAR_ssh_allowed_cidrs=$JSON_CIDRS" >> "$GITHUB_ENV"
 
       - name: Package and stage provisioning payload
         id: payload
         run: |
+          # Only changes in provisioning, mcp, or web affect the devbox payload
           PAYLOAD_REF=$(git log -1 --format=%H -- provisioning mcp web)
           echo "payload_ref=$PAYLOAD_REF" >> "$GITHUB_OUTPUT"
 
@@ -150,17 +153,10 @@ jobs:
 
           BUCKET="${{ steps.state.outputs.bucket }}"
           BUCKET_REGION="${{ steps.state.outputs.bucket_region }}"
-          URL_KEY="payloads/$PAYLOAD_REF.url"
 
-          if aws s3 cp "s3://$BUCKET/$URL_KEY" /tmp/cached_url.txt 2>/dev/null && [ -s /tmp/cached_url.txt ]; then
-            TARBALL_URL=$(cat /tmp/cached_url.txt)
-            echo "Reusing cached presigned payload URL"
-          else
-            aws s3 cp /tmp/devbox-payload.tar.gz "s3://$BUCKET/payloads/$PAYLOAD_REF.tar.gz"
-            TARBALL_URL=$(aws s3 presign "s3://$BUCKET/payloads/$PAYLOAD_REF.tar.gz" --expires-in 604800 --region "$BUCKET_REGION")
-            printf '%s' "$TARBALL_URL" > /tmp/cached_url.txt
-            aws s3 cp /tmp/cached_url.txt "s3://$BUCKET/$URL_KEY"
-          fi
+          # Upload payload and generate a fresh presigned URL for this deployment run
+          aws s3 cp /tmp/devbox-payload.tar.gz "s3://$BUCKET/payloads/$PAYLOAD_REF.tar.gz"
+          TARBALL_URL=$(aws s3 presign "s3://$BUCKET/payloads/$PAYLOAD_REF.tar.gz" --expires-in 3600 --region "$BUCKET_REGION")
           echo "tarball_url=$TARBALL_URL" >> "$GITHUB_OUTPUT"
 
       - name: Terraform init
@@ -191,6 +187,8 @@ jobs:
 
       - name: Deployment summary
         working-directory: terraform/aws
+        env:
+          SSH_ALLOWED_CIDRS: ${{ inputs.ssh_allowed_cidrs }}
         run: |
           IP=$(terraform output -raw public_ip)
           USER=$(terraform output -raw username)
@@ -216,17 +214,19 @@ jobs:
 
           \`\`\`bash
           gh auth login
+          git config --global user.name  "Your Name"
+          git config --global user.email "you@example.com"
           codex login --device-auth
           claude
           agy
           \`\`\`
           EOF
 
-          if [ -n "$TF_VAR_tailscale_authkey" ] && [ -z "${{ inputs.ssh_allowed_cidrs }}" ]; then
-            cat >> "$GITHUB_STEP_SUMMARY" << 'WARN'
+          if [ -n "$TF_VAR_tailscale_authkey" ] && [ -z "$SSH_ALLOWED_CIDRS" ]; then
+            cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
 
           > [!WARNING]
           > **Port 22 is closed to the public internet** because a Tailscale auth key was configured without fallback CIDRs (`ssh_allowed_cidrs`).
           > Ensure your Tailnet node authenticates successfully. If Tailscale fails, this server cannot be reached via SSH.
-WARN
+          EOF
           fi

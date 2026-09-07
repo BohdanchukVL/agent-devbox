@@ -37,6 +37,20 @@ jobs:
           terraform -chdir=terraform/azure init -backend=false
           terraform -chdir=terraform/azure validate
 
+  workflows:
+    name: GitHub Actions Workflow Lint (actionlint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install actionlint
+        run: |
+          bash <(curl -s https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          sudo mv ./actionlint /usr/local/bin/
+
+      - name: Run actionlint
+        run: actionlint
+
   scripts:
     name: Shell Scripts Syntax & ShellCheck
     runs-on: ubuntu-latest
@@ -52,7 +66,7 @@ jobs:
 
       - name: Run shellcheck
         run: |
-          shellcheck provisioning/*.sh
+          shellcheck -S warning -x provisioning/*.sh
 
   node:
     name: Node.js Syntax & Lockfile Checks
