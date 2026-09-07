@@ -147,36 +147,36 @@ if [ -d "/opt/devbox/web" ]; then
     TOKEN=$(openssl rand -hex 16 2>/dev/null || od -vN 16 -An -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
   fi
   if [ -z "$TOKEN" ]; then
-    log "ERROR: failed to generate secure DEVBOX_WEB_TOKEN"
-    exit 1
-  fi
-  echo "DEVBOX_WEB_TOKEN=$TOKEN" > "$H/.devbox/web.env"
-  chmod 0600 "$H/.devbox/web.env"
-  chown "$U:$U" "$H/.devbox/web.env"
+    log "warning: failed to generate secure DEVBOX_WEB_TOKEN; skipping devbox-web setup"
+  else
+    echo "DEVBOX_WEB_TOKEN=$TOKEN" > "$H/.devbox/web.env"
+    chmod 0600 "$H/.devbox/web.env"
+    chown "$U:$U" "$H/.devbox/web.env"
 
-  # Install web gateway dependencies
-  sudo -u "$U" -H bash -c "cd '$WEB_DIR' && (npm ci --omit=dev 2>/dev/null || npm install --omit=dev)" || true
+    # Install web gateway dependencies
+    sudo -u "$U" -H bash -c "cd '$WEB_DIR' && (npm ci --omit=dev 2>/dev/null || npm install --omit=dev)" || true
 
-  # Setup systemd user service
-  SYSTEMD_USER_DIR="$H/.config/systemd/user"
-  install -d -o "$U" -g "$U" "$SYSTEMD_USER_DIR"
-  if [ -f "$WEB_DIR/devbox-web.service" ]; then
-    install -m 0644 -o "$U" -g "$U" "$WEB_DIR/devbox-web.service" "$SYSTEMD_USER_DIR/devbox-web.service"
-    loginctl enable-linger "$U" 2>/dev/null || true
-    U_UID=$(id -u "$U")
-    systemctl start "user@$U_UID.service" 2>/dev/null || true
-    for _ in 1 2 3 4 5; do
-      [ -S "/run/user/$U_UID/bus" ] || [ -S "/run/user/$U_UID/systemd/private" ] && break
-      sleep 0.5
-    done
-    systemctl --user -M "$U@" daemon-reload 2>/dev/null || true
-    systemctl --user -M "$U@" enable --now devbox-web.service 2>/dev/null || true
-  fi
+    # Setup systemd user service
+    SYSTEMD_USER_DIR="$H/.config/systemd/user"
+    install -d -o "$U" -g "$U" "$SYSTEMD_USER_DIR"
+    if [ -f "$WEB_DIR/devbox-web.service" ]; then
+      install -m 0644 -o "$U" -g "$U" "$WEB_DIR/devbox-web.service" "$SYSTEMD_USER_DIR/devbox-web.service"
+      loginctl enable-linger "$U" 2>/dev/null || true
+      U_UID=$(id -u "$U")
+      systemctl start "user@$U_UID.service" 2>/dev/null || true
+      for _ in 1 2 3 4 5; do
+        [ -S "/run/user/$U_UID/bus" ] || [ -S "/run/user/$U_UID/systemd/private" ] && break
+        sleep 0.5
+      done
+      systemctl --user -M "$U@" daemon-reload 2>/dev/null || true
+      systemctl --user -M "$U@" enable --now devbox-web.service 2>/dev/null || true
+    fi
 
-  # If Tailscale is running, expose port 7681 securely with MagicDNS HTTPS inside Tailnet
-  if command -v tailscale >/dev/null 2>&1 && tailscale ip -4 >/dev/null 2>&1; then
-    log "configuring tailscale serve for devbox-web (port 7681)..."
-    tailscale serve --bg 7681 2>/dev/null || true
+    # If Tailscale is running, expose port 7681 securely with MagicDNS HTTPS inside Tailnet
+    if command -v tailscale >/dev/null 2>&1 && tailscale ip -4 >/dev/null 2>&1; then
+      log "configuring tailscale serve for devbox-web (port 7681)..."
+      tailscale serve --bg 7681 2>/dev/null || true
+    fi
   fi
 fi
 

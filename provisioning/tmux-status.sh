@@ -107,7 +107,7 @@ ai)
             [ -n "$child_pid" ] && child_cmd=$(tr '\0' ' ' < "/proc/$child_pid/cmdline" 2>/dev/null)
         fi
         if [ -z "$child_cmd" ]; then
-            child_pids=$(pgrep -P "$pane_pid" 2>/dev/null | tr '\n' ' ')
+            child_pids=$(pgrep -P "$pane_pid" 2>/dev/null | paste -sd, -)
             [ -n "$child_pids" ] && child_cmd=$(ps -o args= -p "$child_pids" 2>/dev/null)
         fi
         [ -n "$child_cmd" ] && full_cmd="$pane_cmd $child_cmd"
@@ -127,7 +127,7 @@ ai)
         while read -r p_pid p_cmd; do
             [ -z "$p_pid" ] && continue
             cur_cmds="$p_cmd"
-            c_pids=$(pgrep -P "$p_pid" 2>/dev/null | tr '\n' ' ')
+            c_pids=$(pgrep -P "$p_pid" 2>/dev/null | paste -sd, -)
             if [ -n "$c_pids" ]; then
                 c_args=$(ps -o args= -p "$c_pids" 2>/dev/null)
                 cur_cmds="$cur_cmds $c_args"
