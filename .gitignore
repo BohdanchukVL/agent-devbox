@@ -18,9 +18,11 @@ devbox.env
 # Rust (cli/)
 target/
 
-# Node (web/)
+# Node (web/, mcp/)
 node_modules/
 *.log
+!package-lock.json
+!**/package-lock.json
 
 # OS
 .DS_Store
