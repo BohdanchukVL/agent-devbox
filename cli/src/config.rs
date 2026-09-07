@@ -264,10 +264,7 @@ pub fn resolve(
         }),
     };
     let default_command = cfg.defaults.remote_command.clone();
-    let default_paste = parse_paste(
-        cfg.defaults.paste_intercept.as_deref(),
-        PasteIntercept::Ask,
-    );
+    let default_paste = parse_paste(cfg.defaults.paste_intercept.as_deref(), PasteIntercept::Ask);
     let inbox_scope = match cfg.defaults.inbox_scope.as_deref() {
         None => InboxScope::Project,
         Some(v) => InboxScope::parse(v).unwrap_or_else(|| {

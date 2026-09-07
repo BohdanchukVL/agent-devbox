@@ -316,14 +316,16 @@ async fn handle_paste(
 }
 
 fn is_sensitive_path(path: &std::path::Path) -> bool {
-    let path_str = path.to_string_lossy();
-    if path_str.contains("/.ssh/") || path_str.contains("/.gnupg/") {
-        return true;
+    for comp in path.components() {
+        if let std::path::Component::Normal(c) = comp {
+            if let Some(s) = c.to_str() {
+                if s.starts_with('.') {
+                    return true;
+                }
+            }
+        }
     }
     if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-        if file_name.starts_with('.') {
-            return true;
-        }
         if file_name.starts_with("id_")
             || file_name.ends_with(".pem")
             || file_name.ends_with(".key")
@@ -660,7 +662,14 @@ mod tests {
         use std::path::Path;
         assert!(is_sensitive_path(Path::new("/home/user/.ssh/id_ed25519")));
         assert!(is_sensitive_path(Path::new("/home/user/.ssh/config")));
-        assert!(is_sensitive_path(Path::new("/home/user/.gnupg/secring.gpg")));
+        assert!(is_sensitive_path(Path::new(
+            "/home/user/.gnupg/secring.gpg"
+        )));
+        assert!(is_sensitive_path(Path::new("/home/user/.aws/credentials")));
+        assert!(is_sensitive_path(Path::new("/home/user/.kube/config")));
+        assert!(is_sensitive_path(Path::new(
+            "/home/user/.config/gh/hosts.yml"
+        )));
         assert!(is_sensitive_path(Path::new("/work/.env")));
         assert!(is_sensitive_path(Path::new("/work/.env.local")));
         assert!(is_sensitive_path(Path::new("/work/server.key")));
