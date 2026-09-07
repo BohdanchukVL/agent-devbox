@@ -1,0 +1,14 @@
+{
+  "name": "devbox-db",
+  "version": "0.1.0",
+  "description": "Unified SQLite and PostgreSQL schema introspection and safe query MCP server for agent-devbox",
+  "type": "module",
+  "main": "index.js",
+  "bin": {
+    "devbox-db": "./index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "pg": "^8.13.3"
+  }
+}
