@@ -121,11 +121,12 @@ jobs:
           AWS_REQUEST_CHECKSUM_CALCULATION: when_required
           AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
         run: |
-          # Only changes in provisioning, mcp, or web affect the devbox payload
-          PAYLOAD_REF=$(git log -1 --format=%H -- provisioning mcp web)
+          # Tree hash of provisioning, mcp, and web is deterministic and works on shallow clones
+          PAYLOAD_REF=$(git rev-parse HEAD:provisioning HEAD:mcp HEAD:web | sha256sum | cut -c1-16)
           echo "payload_ref=$PAYLOAD_REF" >> "$GITHUB_OUTPUT"
 
-          tar -czf /tmp/devbox-payload.tar.gz provisioning mcp web
+          # Deterministic tarball (reproducible sorting, mtime, ownership, and gzip)
+          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - provisioning mcp web | gzip -n > /tmp/devbox-payload.tar.gz
           PAYLOAD_SHA=$(sha256sum /tmp/devbox-payload.tar.gz | cut -d' ' -f1)
           echo "sha256=$PAYLOAD_SHA" >> "$GITHUB_OUTPUT"
 

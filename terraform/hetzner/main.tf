@@ -71,7 +71,7 @@ resource "hcloud_volume" "workspace" {
 }
 
 resource "terraform_data" "payload" {
-  input = "${var.git_sha256}:${var.install_docker}:${var.install_codex}:${var.install_claude}:${var.install_opencode}:${var.install_antigravity}:${var.install_browser}:${var.username}"
+  input = "${var.git_ref}:${var.install_docker}:${var.install_codex}:${var.install_claude}:${var.install_opencode}:${var.install_antigravity}:${var.install_browser}:${var.username}"
 }
 
 resource "hcloud_server" "this" {
