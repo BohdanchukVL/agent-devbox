@@ -11,7 +11,7 @@ local file     → remote file path
 remote yank    → local clipboard   (OSC 52)
 ```
 
-Not a terminal emulator — a transparent proxy between the local TTY and the remote PTY (SSH), adding what plain `ssh` lacks. Built for remote agents (Claude Code, Codex) on a VPS: screenshot → `Ctrl+G V` → path lands in the agent's prompt.
+Not a terminal emulator — a transparent proxy between the local TTY and the remote PTY (SSH), adding what plain `ssh` lacks. Built for remote agents (Claude Code, Codex, Antigravity) on a VPS: screenshot → `Ctrl+G V` → path lands in the agent's prompt.
 
 ## Usage
 

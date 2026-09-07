@@ -35,7 +35,7 @@ location for the state bucket (`fsn1` default; also `nbg1`, `hel1`).
 | Server size | `cx23` (2 vCPU/4 GB) … `cx53` (16 vCPU/32 GB), `cpx32`/`cpx42` (performance) | `cx33` |
 | Location | `nbg1` Nuremberg, `fsn1` Falkenstein, `hel1` Helsinki | `nbg1` |
 | Workspace volume | GB for a dedicated `/workspace` volume; `0` = root disk | `80` |
-| Install Docker / Codex / Claude Code / OpenCode / Antigravity / Browser | toggles | ✔ / ✔ / ✔ / ✘ / ✘ / ✔ |
+| Install Docker / Codex / Claude Code / OpenCode / Antigravity / Browser | toggles | ✔ / ✔ / ✔ / ✘ / ✔ / ✔ |
 
 The first run automatically creates the state bucket
 (`tfstate-agent-devbox-<owner>`) in Object Storage. Re-running the workflow

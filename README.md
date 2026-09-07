@@ -1,6 +1,6 @@
 # agent-devbox
 
-Spin up a disposable cloud dev machine with AI coding agents (Codex CLI, Claude Code) pre-installed — straight from GitHub Actions, no local tooling required.
+Spin up a disposable cloud dev machine with AI coding agents (Codex CLI, Claude Code, Antigravity CLI) pre-installed — straight from GitHub Actions, no local tooling required.
 
 ```
 Use this template → add secrets → run "Deploy to Hetzner" → ssh dev@<ip> → work
@@ -12,10 +12,11 @@ Use this template → add secrets → run "Deploy to Hetzner" → ssh dev@<ip> �
 
 A fresh Ubuntu 24.04 server with:
 
-- **Agents**: Codex CLI, Claude Code (OpenCode and Google Antigravity `agy` optional)
+- **Agents**: Codex CLI, Claude Code, Google Antigravity CLI (`agy`) pre-installed and ready to auth (OpenCode optional)
+- **Codex Sandbox**: bubblewrap (`bwrap`) pre-configured with unprivileged user namespaces for secure local execution
 - **Headless browser**: Chromium via Playwright, so agents can run E2E tests and take screenshots (optional, on by default)
 - **Dev shell**: zsh with autosuggestions, syntax highlighting, a starship prompt, fzf and zoxide, plus modern CLIs (eza, bat, fd, ripgrep, jq, yq, delta, lazygit, direnv, shellcheck, httpie) and neovim
-- **tmux**: a persistent session auto-attached on SSH login — detach and your agents keep running — with directory-labelled tabs and a git/load status bar
+- **tmux**: a persistent session auto-attached on SSH login — with directory-labelled tabs and a live AI status bar (auto-detects Claude, Codex, Agy; tracks context/rate limits, activity `⚡`, and cost)
 - **Runtimes**: Node.js 22, npm, pnpm, Python 3, pipx
 - **Docker**: Engine + Compose plugin (optional)
 - **Workspace**: `/workspace` owned by the dev user (on Hetzner: a separate volume, so it can outlive the server type)
@@ -51,6 +52,7 @@ A fresh Ubuntu 24.04 server with:
    git config --global user.email "you@example.com"
    codex login --device-auth
    claude
+   agy
    ```
 
    > **Tip:** to drag a screenshot straight into your agent, connect through the
@@ -99,6 +101,7 @@ status MOTD:
 │ Docker: ready                            │
 │ Codex: installed                         │
 │ Claude Code: installed                   │
+│ Antigravity: installed                   │
 │ Browser: installed                       │
 │                                          │
 │ Next steps:                              │
@@ -107,6 +110,7 @@ status MOTD:
 │   git config --global user.email ...     │
 │   codex login --device-auth              │
 │   claude                                 │
+│   agy                                    │
 └──────────────────────────────────────────┘
 ```
 

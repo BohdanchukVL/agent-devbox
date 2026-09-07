@@ -53,7 +53,7 @@ Store the entire JSON output as the `AZURE_CREDENTIALS` secret, plus
 | Region | `westeurope`, `northeurope`, `germanywestcentral`, `eastus` | `westeurope` |
 | Machine size | `Standard_B2s` (2/4) … `Standard_D4s_v5` (4/16) | `Standard_B2ms` |
 | Disk | OS disk (Premium SSD), holds `/workspace` | `80` GB |
-| Install Docker / Codex / Claude Code / OpenCode / Antigravity / Browser | toggles | ✔ / ✔ / ✔ / ✘ / ✘ / ✔ |
+| Install Docker / Codex / Claude Code / OpenCode / Antigravity / Browser | toggles | ✔ / ✔ / ✔ / ✘ / ✔ / ✔ |
 
 The first run creates a `agent-devbox-tfstate` resource group with a storage
 account for Terraform state (name derived from your repo, so it is globally

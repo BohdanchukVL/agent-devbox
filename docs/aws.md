@@ -66,7 +66,7 @@ One-time setup in AWS:
 | Region | where the instance lives | `eu-central-1` |
 | Machine size | `t3.small` (2/2) … `t3.xlarge` (4/16) | `t3.medium` |
 | Disk | root gp3 volume, holds `/workspace` | `80` GB |
-| Install Docker / Codex / Claude Code / OpenCode / Antigravity / Browser | toggles | ✔ / ✔ / ✔ / ✘ / ✘ / ✔ |
+| Install Docker / Codex / Claude Code / OpenCode / Antigravity / Browser | toggles | ✔ / ✔ / ✔ / ✘ / ✔ / ✔ |
 
 The first run creates an S3 state bucket `tfstate-agent-devbox-<owner>`
 (versioned, public access blocked, S3-native lockfile) in the deploy region.
