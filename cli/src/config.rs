@@ -174,8 +174,8 @@ fn parse_paste(s: Option<&str>, fallback: PasteIntercept) -> PasteIntercept {
     match s {
         None => fallback,
         Some(v) => PasteIntercept::parse(v).unwrap_or_else(|| {
-            eprintln!("[devbox] unknown paste_intercept '{v}' — using 'auto' (auto|ask|off)");
-            PasteIntercept::Auto
+            eprintln!("[devbox] unknown paste_intercept '{v}' — using 'ask' (auto|ask|off)");
+            PasteIntercept::Ask
         }),
     }
 }
@@ -266,7 +266,7 @@ pub fn resolve(
     let default_command = cfg.defaults.remote_command.clone();
     let default_paste = parse_paste(
         cfg.defaults.paste_intercept.as_deref(),
-        PasteIntercept::Auto,
+        PasteIntercept::Ask,
     );
     let inbox_scope = match cfg.defaults.inbox_scope.as_deref() {
         None => InboxScope::Project,

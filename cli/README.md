@@ -52,9 +52,11 @@ substitutes the remote paths — so a Finder ⌥⌘C (Copy as Pathname) then ⌘
 drag-and-drop, just works without the leader. Anything that is not entirely
 local paths (ordinary text) passes through byte-exact.
 
-`paste_intercept`, global or per-host: `auto` (default, upload + status line) ·
-`ask` (y/n first) · `off` (never intercept). False positive to know about: if
-you genuinely mean to paste a path *as text*, use `ask`/`off` or `Ctrl+G V`.
+`paste_intercept`, global or per-host: `ask` (default, y/n confirmation) ·
+`auto` (upload + status line) · `off` (never intercept). Sensitive paths (such as
+`~/.ssh/*`, `id_*`, `*.pem`, `*.key`, and dotfiles like `.env`) are always guarded
+with a confirmation prompt even if `auto` is configured. False positive to know
+about: if you genuinely mean to paste a path *as text*, use `ask`/`off` or `Ctrl+G V`.
 
 ### OSC 52 security
 
@@ -76,7 +78,7 @@ leader = "ctrl+g"               # ctrl+t if you use Claude Code (frees Ctrl+G fo
 leader_timeout_ms = 1500
 osc52 = "notify"                # allow | notify | ask | deny
 osc52_max_bytes = 100000
-paste_intercept = "auto"        # auto | ask | off (native ⌘V / drag-and-drop of files)
+paste_intercept = "ask"         # ask (default) | auto | off (native ⌘V / drag-and-drop of files)
 status = "auto"                 # auto | inline | notify | quiet (see below)
 
 [hosts.prod]

@@ -290,7 +290,15 @@ async fn handle_paste(
         _ => return send_framed(ssh, &body).await, // text / dir / binary → verbatim
     };
 
-    match cfg.paste_intercept {
+    let effective_mode = if cfg.paste_intercept == PasteIntercept::Auto
+        && paths.iter().any(|p| is_sensitive_path(p))
+    {
+        PasteIntercept::Ask
+    } else {
+        cfg.paste_intercept
+    };
+
+    match effective_mode {
         PasteIntercept::Off => unreachable!("checked above"),
         PasteIntercept::Auto => upload_and_type(ssh, cfg, &paths, out).await,
         PasteIntercept::Ask => {
@@ -305,6 +313,27 @@ async fn handle_paste(
             }
         }
     }
+}
+
+fn is_sensitive_path(path: &std::path::Path) -> bool {
+    let path_str = path.to_string_lossy();
+    if path_str.contains("/.ssh/") || path_str.contains("/.gnupg/") {
+        return true;
+    }
+    if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+        if file_name.starts_with('.') {
+            return true;
+        }
+        if file_name.starts_with("id_")
+            || file_name.ends_with(".pem")
+            || file_name.ends_with(".key")
+            || file_name.ends_with(".pfx")
+            || file_name.ends_with(".p12")
+        {
+            return true;
+        }
+    }
+    false
 }
 
 async fn upload_and_type(ssh: &mut Ssh, cfg: &Resolved, paths: &[PathBuf], out: &mut impl Write) {
@@ -624,5 +653,19 @@ mod tests {
         assert!(newline_warning(b"plain text").is_empty());
         assert!(!newline_warning(b"cmd\n").is_empty());
         assert!(!newline_warning(b"cmd\r").is_empty());
+    }
+
+    #[test]
+    fn sensitive_paths_detected() {
+        use std::path::Path;
+        assert!(is_sensitive_path(Path::new("/home/user/.ssh/id_ed25519")));
+        assert!(is_sensitive_path(Path::new("/home/user/.ssh/config")));
+        assert!(is_sensitive_path(Path::new("/home/user/.gnupg/secring.gpg")));
+        assert!(is_sensitive_path(Path::new("/work/.env")));
+        assert!(is_sensitive_path(Path::new("/work/.env.local")));
+        assert!(is_sensitive_path(Path::new("/work/server.key")));
+        assert!(is_sensitive_path(Path::new("/work/cert.pem")));
+        assert!(!is_sensitive_path(Path::new("/work/main.rs")));
+        assert!(!is_sensitive_path(Path::new("/work/docs/readme.md")));
     }
 }
