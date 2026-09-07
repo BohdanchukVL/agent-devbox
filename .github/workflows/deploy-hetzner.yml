@@ -43,6 +43,10 @@ on:
         description: Install headless browser (Playwright/Chromium) for web testing
         type: boolean
         default: true
+      ssh_allowed_cidrs:
+        description: Comma-separated CIDRs allowed for SSH fallback (e.g. 203.0.113.50/32). Recommended when Tailscale is used.
+        required: false
+        default: ""
 
 # One devbox per repo — serialize runs against the shared state.
 concurrency: hetzner-devbox
@@ -103,6 +107,39 @@ jobs:
           echo "bucket=$BUCKET"     >> "$GITHUB_OUTPUT"
           echo "endpoint=$ENDPOINT" >> "$GITHUB_OUTPUT"
 
+      - name: Configure SSH ingress CIDRs
+        if: inputs.ssh_allowed_cidrs != ''
+        run: |
+          JSON_CIDRS=$(echo "${{ inputs.ssh_allowed_cidrs }}" | tr ',' '\n' | sed 's/^[ \t]*//;s/[ \t]*$//' | jq -R . | jq -s . -c)
+          echo "TF_VAR_ssh_allowed_cidrs=$JSON_CIDRS" >> "$GITHUB_ENV"
+
+      - name: Package and stage provisioning payload
+        id: payload
+        run: |
+          # Only changes in provisioning, mcp, or web affect the devbox payload
+          PAYLOAD_REF=$(git log -1 --format=%H -- provisioning mcp web)
+          echo "payload_ref=$PAYLOAD_REF" >> "$GITHUB_OUTPUT"
+
+          tar -czf /tmp/devbox-payload.tar.gz provisioning mcp web
+          PAYLOAD_SHA=$(sha256sum /tmp/devbox-payload.tar.gz | cut -d' ' -f1)
+          echo "sha256=$PAYLOAD_SHA" >> "$GITHUB_OUTPUT"
+
+          BUCKET="${{ steps.state.outputs.bucket }}"
+          ENDPOINT="${{ steps.state.outputs.endpoint }}"
+          URL_KEY="payloads/$PAYLOAD_REF.url"
+
+          # Reuse existing presigned URL if cached to keep user-data identical on re-runs
+          if aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3 cp "s3://$BUCKET/$URL_KEY" /tmp/cached_url.txt 2>/dev/null && [ -s /tmp/cached_url.txt ]; then
+            TARBALL_URL=$(cat /tmp/cached_url.txt)
+            echo "Reusing cached presigned payload URL"
+          else
+            aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3 cp /tmp/devbox-payload.tar.gz "s3://$BUCKET/payloads/$PAYLOAD_REF.tar.gz"
+            TARBALL_URL=$(aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3 presign "s3://$BUCKET/payloads/$PAYLOAD_REF.tar.gz" --expires-in 604800)
+            printf '%s' "$TARBALL_URL" > /tmp/cached_url.txt
+            aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3 cp /tmp/cached_url.txt "s3://$BUCKET/$URL_KEY"
+          fi
+          echo "tarball_url=$TARBALL_URL" >> "$GITHUB_OUTPUT"
+
       - name: Terraform init
         working-directory: terraform/hetzner
         run: |
@@ -131,8 +168,9 @@ jobs:
             -var="install_opencode=${{ inputs.install_opencode }}" \
             -var="install_antigravity=${{ inputs.install_antigravity }}" \
             -var="install_browser=${{ inputs.install_browser }}" \
-            -var="git_repo=${{ github.repository }}" \
-            -var="git_ref=${{ github.sha }}"
+            -var="tarball_url=${{ steps.payload.outputs.tarball_url }}" \
+            -var="git_sha256=${{ steps.payload.outputs.sha256 }}" \
+            -var="git_ref=${{ steps.payload.outputs.payload_ref }}"
 
       - name: Deployment summary
         working-directory: terraform/hetzner
@@ -163,5 +201,16 @@ jobs:
           gh auth login
           codex login --device-auth
           claude
+          agy
           \`\`\`
           EOF
+
+          if [ -n "$TF_VAR_tailscale_authkey" ] && [ -z "${{ inputs.ssh_allowed_cidrs }}" ]; then
+            cat >> "$GITHUB_STEP_SUMMARY" << 'WARN'
+
+          > [!WARNING]
+          > **Port 22 is closed to the public internet** because a Tailscale auth key was configured without fallback CIDRs (`ssh_allowed_cidrs`).
+          > Ensure your Tailnet node authenticates successfully. If Tailscale fails, this server cannot be reached via SSH.
+WARN
+          fi
+

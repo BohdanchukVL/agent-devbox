@@ -79,9 +79,9 @@ variable "ssh_allowed_cidrs" {
 }
 
 variable "git_repo" {
-  description = "GitHub repository (owner/repo) to pull provisioning scripts from"
+  description = "GitHub repository (owner/repo) to pull provisioning scripts from if tarball_url is not set"
   type        = string
-  default     = "BohdanchukVL/agent-devbox"
+  default     = ""
 }
 
 variable "git_ref" {

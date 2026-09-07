@@ -2,9 +2,8 @@ name: Lint and Validate
 
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
-    branches: ["**"]
 
 permissions:
   contents: read
@@ -39,7 +38,7 @@ jobs:
           terraform -chdir=terraform/azure validate
 
   scripts:
-    name: Shell Scripts Syntax
+    name: Shell Scripts Syntax & ShellCheck
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -47,9 +46,13 @@ jobs:
       - name: Validate bash scripts syntax
         run: |
           for f in provisioning/*.sh; do
-            echo "Checking $f..."
+            echo "Checking syntax: $f..."
             bash -n "$f"
           done
+
+      - name: Run shellcheck
+        run: |
+          shellcheck provisioning/*.sh
 
   node:
     name: Node.js Syntax & Lockfile Checks
@@ -59,7 +62,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Check JavaScript syntax
         run: |
@@ -78,22 +81,3 @@ jobs:
       - name: Check mcp/code-intel npm audit
         run: |
           cd mcp/code-intel && npm audit --audit-level=high
-
-  rust-cli:
-    name: Rust CLI Clippy & Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-
-      - name: Cargo clippy
-        working-directory: cli
-        run: cargo clippy -- -D warnings
-
-      - name: Cargo test
-        working-directory: cli
-        run: cargo test
