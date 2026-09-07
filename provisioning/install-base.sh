@@ -64,6 +64,13 @@ if [ "$INSTALL_DOCKER" = "true" ]; then
   systemctl enable --now docker
 fi
 
+log "installing Tailscale"
+curl -fsSL https://tailscale.com/install.sh | sh
+if [ -n "${TAILSCALE_AUTHKEY:-}" ]; then
+  log "joining Tailscale network"
+  tailscale up --authkey="${TAILSCALE_AUTHKEY}" --ssh --hostname="agent-devbox" || log "Tailscale join failed (check auth key)"
+fi
+
 log "setting up /workspace"
 mkdir -p /workspace
 if [ -n "$WORKSPACE_DEVICE" ]; then

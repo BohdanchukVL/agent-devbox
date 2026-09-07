@@ -21,18 +21,25 @@ if [ -e /etc/devbox/.provisioned ]; then
   claude_status=$(have claude && echo "installed" || echo "not installed")
   agy_status=$(have agy && echo "installed" || echo "not installed")
   browser_status=$(have playwright && echo "installed" || echo "not installed")
+  ts_status="not installed"
+  if have tailscale; then
+    ts_ip=$(tailscale ip -4 2>/dev/null || true)
+    [ -n "$ts_ip" ] && ts_status="connected ($ts_ip)" || ts_status="installed (offline)"
+  fi
 elif [ -e /etc/devbox/.failed ]; then
   docker_status=$(have docker && echo "ready" || echo "failed")
   codex_status=$(have codex && echo "installed" || echo "failed")
   claude_status=$(have claude && echo "installed" || echo "failed")
   agy_status=$(have agy && echo "installed" || echo "failed")
   browser_status=$(have playwright && echo "installed" || echo "failed")
+  ts_status=$(have tailscale && echo "installed" || echo "failed")
 else
   docker_status="provisioning..."
   codex_status="provisioning..."
   claude_status="provisioning..."
   agy_status="provisioning..."
   browser_status="provisioning..."
+  ts_status="provisioning..."
 fi
 
 line() { printf "│ %-40s │\n" "$1"; }
@@ -46,6 +53,7 @@ line "Codex: $codex_status"
 line "Claude Code: $claude_status"
 line "Antigravity: $agy_status"
 line "Browser: $browser_status"
+line "Tailscale: $ts_status"
 line ""
 line "Next steps:"
 line "  gh auth login"

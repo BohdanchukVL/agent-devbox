@@ -28,6 +28,7 @@ write_files:
       INSTALL_ANTIGRAVITY=${install_antigravity}
       INSTALL_BROWSER=${install_browser}
       WORKSPACE_DEVICE=${workspace_device}
+      TAILSCALE_AUTHKEY=${tailscale_authkey}
   - path: /opt/devbox/install-base.sh
     permissions: "0755"
     content: |

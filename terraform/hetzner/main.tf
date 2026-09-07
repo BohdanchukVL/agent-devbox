@@ -10,6 +10,7 @@ locals {
     install_opencode    = var.install_opencode
     install_antigravity = var.install_antigravity
     install_browser     = var.install_browser
+    tailscale_authkey   = var.tailscale_authkey
     workspace_device    = local.use_volume ? "/dev/disk/by-id/scsi-0HC_Volume_${hcloud_volume.workspace[0].id}" : ""
     install_base        = file("${path.module}/../../provisioning/install-base.sh")
     install_agents      = file("${path.module}/../../provisioning/install-agents.sh")
@@ -37,6 +38,14 @@ resource "hcloud_firewall" "this" {
     direction   = "in"
     protocol    = "tcp"
     port        = "22"
+    source_ips  = ["0.0.0.0/0", "::/0"]
+  }
+
+  rule {
+    description = "Tailscale WireGuard"
+    direction   = "in"
+    protocol    = "udp"
+    port        = "41641"
     source_ips  = ["0.0.0.0/0", "::/0"]
   }
 

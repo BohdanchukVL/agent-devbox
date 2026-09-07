@@ -31,6 +31,7 @@ to `AZURE_CREDENTIALS`.
    | `AZURE_TENANT_ID` | Directory (tenant) ID |
    | `AZURE_SUBSCRIPTION_ID` | subscription ID |
    | `SSH_PUBLIC_KEY` | your public key |
+   | `TAILSCALE_AUTHKEY` | (Optional) Tailscale auth key (`tskey-auth-...`) for automatic Tailnet join |
 
 ## Option B — Simple (service principal secret)
 

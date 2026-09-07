@@ -55,6 +55,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+      TF_VAR_tailscale_authkey: ${{ secrets.TAILSCALE_AUTHKEY || secrets.TAILSCALE_AUTH_KEY }}
       HAS_OIDC: ${{ secrets.AZURE_CLIENT_ID != '' }}
       # Free-form input — pass via env, never interpolate into a run: script.
       DISK_SIZE: ${{ inputs.disk_size }}
@@ -153,6 +154,8 @@ jobs:
 
           \`\`\`bash
           ssh $USER@$IP
+          # Or via Tailscale (if auth key configured):
+          ssh $USER@agent-devbox
           \`\`\`
 
           Provisioning keeps running for a few minutes after boot — the MOTD

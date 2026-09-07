@@ -64,3 +64,10 @@ variable "install_browser" {
   type        = bool
   default     = true
 }
+
+variable "tailscale_authkey" {
+  description = "Tailscale auth key for joining the tailnet automatically (optional)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}

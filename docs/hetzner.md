@@ -22,6 +22,7 @@ The fastest provider to get started with — one API token, one storage key pair
 | `HETZNER_S3_ACCESS_KEY` | Object Storage access key |
 | `HETZNER_S3_SECRET_KEY` | Object Storage secret key |
 | `SSH_PUBLIC_KEY` | your public key, e.g. `ssh-ed25519 AAAA... you@laptop` |
+| `TAILSCALE_AUTHKEY` | (Optional) Tailscale reusable auth key (`tskey-auth-...`) for automatic Tailnet & SSH join |
 
 Optional repository **variable**: `HETZNER_STATE_LOCATION` — Object Storage
 location for the state bucket (`fsn1` default; also `nbg1`, `hel1`).

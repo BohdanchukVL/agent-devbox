@@ -11,6 +11,7 @@ locals {
     install_opencode    = var.install_opencode
     install_antigravity = var.install_antigravity
     install_browser     = var.install_browser
+    tailscale_authkey   = var.tailscale_authkey
     workspace_device    = ""
     install_base        = file("${path.module}/../../provisioning/install-base.sh")
     install_agents      = file("${path.module}/../../provisioning/install-agents.sh")

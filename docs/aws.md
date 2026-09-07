@@ -23,6 +23,7 @@ access keys.
    | `AWS_ACCESS_KEY_ID` | the access key id |
    | `AWS_SECRET_ACCESS_KEY` | the secret key |
    | `SSH_PUBLIC_KEY` | your public key |
+   | `TAILSCALE_AUTHKEY` | (Optional) Tailscale auth key (`tskey-auth-...`) for automatic Tailnet join |
 
 ## Option B — Recommended (OIDC role)
 
@@ -56,6 +57,7 @@ One-time setup in AWS:
    |---|---|
    | `AWS_ROLE_ARN` | `arn:aws:iam::<ACCOUNT_ID>:role/<role-name>` |
    | `SSH_PUBLIC_KEY` | your public key |
+   | `TAILSCALE_AUTHKEY` | (Optional) Tailscale auth key (`tskey-auth-...`) for automatic Tailnet join |
 
 ## Deploy
 
