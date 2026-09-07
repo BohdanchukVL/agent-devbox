@@ -6,6 +6,7 @@
 set -euo pipefail
 trap 'touch /etc/devbox/.failed 2>/dev/null || true' ERR
 
+# shellcheck source=/dev/null
 . /etc/devbox/devbox.env
 U="$DEVBOX_USER"
 H="/home/$U"
@@ -16,11 +17,13 @@ log() { echo "[devbox $(date -u +%H:%M:%S)] $*"; }
 # per-user global prefix owned by dev → agents write their own updates
 install -d -o "$U" -g "$U" "$PREFIX"
 sudo -u "$U" -H npm config set prefix "$PREFIX"
-# put the prefix on PATH for login bash/zsh + tmux panes
+# Set global PATH for devbox user binaries in login shells
+# shellcheck disable=SC2016
 echo 'export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"' > /etc/profile.d/devbox-npm.sh
 chmod 0644 /etc/profile.d/devbox-npm.sh
 # put the prefix on PATH for non-interactive zsh sessions (e.g. ssh dev@host claude ...)
 install -m 0644 -o "$U" -g "$U" /dev/null "$H/.zshenv"
+# shellcheck disable=SC2016
 echo 'export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"' >> "$H/.zshenv"
 
 # install as dev so files land in the dev-owned prefix (npm reads ~/.npmrc)
@@ -138,10 +141,14 @@ if [ -d "/opt/devbox/web" ]; then
   cp -r /opt/devbox/web/* "$WEB_DIR/"
   chown -R "$U:$U" "$WEB_DIR"
 
-  # Generate or configure web gateway token (guaranteed non-empty)
+  # Generate or configure web gateway token (guaranteed non-empty, fail-closed)
   TOKEN="${DEVBOX_WEB_TOKEN:-}"
   if [ -z "$TOKEN" ]; then
-    TOKEN=$(openssl rand -hex 16 2>/dev/null || od -vN 16 -An -tx1 /dev/urandom 2>/dev/null | tr -d ' \n' || echo "devbox-$(date +%s%N)")
+    TOKEN=$(openssl rand -hex 16 2>/dev/null || od -vN 16 -An -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
+  fi
+  if [ -z "$TOKEN" ]; then
+    log "ERROR: failed to generate secure DEVBOX_WEB_TOKEN"
+    exit 1
   fi
   echo "DEVBOX_WEB_TOKEN=$TOKEN" > "$H/.devbox/web.env"
   chmod 0600 "$H/.devbox/web.env"
@@ -157,7 +164,11 @@ if [ -d "/opt/devbox/web" ]; then
     install -m 0644 -o "$U" -g "$U" "$WEB_DIR/devbox-web.service" "$SYSTEMD_USER_DIR/devbox-web.service"
     loginctl enable-linger "$U" 2>/dev/null || true
     U_UID=$(id -u "$U")
-    install -d -m 0700 -o "$U" -g "$U" "/run/user/$U_UID"
+    systemctl start "user@$U_UID.service" 2>/dev/null || true
+    for _ in 1 2 3 4 5; do
+      [ -S "/run/user/$U_UID/bus" ] || [ -S "/run/user/$U_UID/systemd/private" ] && break
+      sleep 0.5
+    done
     systemctl --user -M "$U@" daemon-reload 2>/dev/null || true
     systemctl --user -M "$U@" enable --now devbox-web.service 2>/dev/null || true
   fi

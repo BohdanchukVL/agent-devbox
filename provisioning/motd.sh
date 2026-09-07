@@ -3,6 +3,7 @@
 # Reports live status so it stays truthful even mid-provisioning.
 
 # agents live in the dev user's npm prefix, not on root's PATH — look there too
+# shellcheck source=/dev/null
 . /etc/devbox/devbox.env 2>/dev/null || true
 DEV_BIN="/home/${DEVBOX_USER:-dev}/.npm-global/bin"
 LOCAL_BIN="/home/${DEVBOX_USER:-dev}/.local/bin"
@@ -14,7 +15,11 @@ if [ -e /etc/devbox/.failed ]; then
   claude_status=$(have claude && echo "installed" || echo "failed")
   agy_status=$(have agy && echo "installed" || echo "failed")
   browser_status=$(have playwright && echo "installed" || echo "failed")
-  ts_status=$(have tailscale && echo "installed" || echo "failed")
+  if [ -e /etc/devbox/.failed_tailscale ]; then
+    ts_status="FAILED (check auth key)"
+  else
+    ts_status=$(have tailscale && echo "installed" || echo "failed")
+  fi
 elif [ -e /etc/devbox/.provisioned ]; then
   docker_status="not installed"
   if have docker; then
@@ -29,7 +34,9 @@ elif [ -e /etc/devbox/.provisioned ]; then
   agy_status=$(have agy && echo "installed" || echo "not installed")
   browser_status=$(have playwright && echo "installed" || echo "not installed")
   ts_status="not installed"
-  if have tailscale; then
+  if [ -e /etc/devbox/.failed_tailscale ]; then
+    ts_status="FAILED (check auth key)"
+  elif have tailscale; then
     ts_ip=$(tailscale ip -4 2>/dev/null || true)
     [ -n "$ts_ip" ] && ts_status="connected ($ts_ip)" || ts_status="installed (offline)"
   fi
@@ -39,7 +46,11 @@ else
   claude_status="provisioning..."
   agy_status="provisioning..."
   browser_status="provisioning..."
-  ts_status="provisioning..."
+  if [ -e /etc/devbox/.failed_tailscale ]; then
+    ts_status="FAILED (check auth key)"
+  else
+    ts_status="provisioning..."
+  fi
 fi
 
 line() { printf "│ %-40s │\n" "$1"; }
@@ -62,6 +73,11 @@ line "  git config --global user.email ..."
 line "  codex login --device-auth"
 line "  claude"
 line "  agy"
+if [ -e /etc/devbox/.failed_tailscale ]; then
+  line ""
+  line "⚠ Tailscale join failed!"
+  line "  Check /var/log/devbox-install.log"
+fi
 if [ -e /etc/devbox/.failed ]; then
   line ""
   line "⚠ Provisioning failed:"

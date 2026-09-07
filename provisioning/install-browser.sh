@@ -10,6 +10,7 @@
 set -uo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
+# shellcheck source=/dev/null
 . /etc/devbox/devbox.env
 U="$DEVBOX_USER"
 H="/home/$U"

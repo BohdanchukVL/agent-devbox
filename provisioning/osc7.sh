@@ -1,6 +1,9 @@
+#!/bin/bash
+# shellcheck shell=bash
 # devbox-osc7: report the shell's cwd via OSC 7 so the devbox client can scope
 # uploaded files to the current project (<cwd>/.devbox-inbox/).
 __devbox_osc7() {
+  # shellcheck disable=SC1003
   if [ -n "${TMUX:-}" ]; then
     printf '\033Ptmux;\033\033]7;file://%s%s\033\033\\\033\\' "${HOSTNAME:-h}" "$PWD"
   else

@@ -5,6 +5,7 @@ set -euo pipefail
 trap 'touch /etc/devbox/.failed 2>/dev/null || true' ERR
 export DEBIAN_FRONTEND=noninteractive
 
+# shellcheck source=/dev/null
 . /etc/devbox/devbox.env
 
 log() { echo "[devbox $(date -u +%H:%M:%S)] $*"; }

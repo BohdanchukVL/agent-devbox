@@ -16,6 +16,7 @@ err_report() {
 trap 'err_report $? "$BASH_COMMAND" "$LINENO"' ERR
 
 if [ -f /etc/devbox/devbox.env ]; then
+  # shellcheck source=/dev/null
   . /etc/devbox/devbox.env
 fi
 

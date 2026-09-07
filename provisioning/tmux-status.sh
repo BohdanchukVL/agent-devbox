@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # devbox tmux status segments. Called from ~/.tmux.conf status-right.
 #   tmux-status cwd <dir>   → current dir, $HOME→~, long paths trimmed to …/parent/leaf
 #   tmux-status git <dir>   → branch name (+ '*' if the tree is dirty), else empty
@@ -62,7 +62,7 @@ render_git() {
     local b
     b=$(cd "$d" 2>/dev/null && git symbolic-ref --short HEAD 2>/dev/null) || return 0
     [ -n "$b" ] || return 0
-    if (cd "$d" 2>/dev/null && { ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null || [ -n "$(git status --porcelain -uno 2>/dev/null | head -n 1)" ]; }); then
+    if (cd "$d" 2>/dev/null && { ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null || [ -n "$(git ls-files --others --exclude-standard 2>/dev/null | head -n 1)" ]; }); then
         b="$b*"
     fi
     printf '%s' "$b"
@@ -107,8 +107,8 @@ ai)
             [ -n "$child_pid" ] && child_cmd=$(tr '\0' ' ' < "/proc/$child_pid/cmdline" 2>/dev/null)
         fi
         if [ -z "$child_cmd" ]; then
-            child_pids=$(pgrep -P "$pane_pid" 2>/dev/null)
-            [ -n "$child_pids" ] && child_cmd=$(ps -o args= -p $child_pids 2>/dev/null)
+            child_pids=$(pgrep -P "$pane_pid" 2>/dev/null | tr '\n' ' ')
+            [ -n "$child_pids" ] && child_cmd=$(ps -o args= -p "$child_pids" 2>/dev/null)
         fi
         [ -n "$child_cmd" ] && full_cmd="$pane_cmd $child_cmd"
     fi
@@ -127,9 +127,9 @@ ai)
         while read -r p_pid p_cmd; do
             [ -z "$p_pid" ] && continue
             cur_cmds="$p_cmd"
-            c_pids=$(pgrep -P "$p_pid" 2>/dev/null)
+            c_pids=$(pgrep -P "$p_pid" 2>/dev/null | tr '\n' ' ')
             if [ -n "$c_pids" ]; then
-                c_args=$(ps -o args= -p $c_pids 2>/dev/null)
+                c_args=$(ps -o args= -p "$c_pids" 2>/dev/null)
                 cur_cmds="$cur_cmds $c_args"
             fi
             case "$cur_cmds" in
@@ -258,12 +258,12 @@ EOF
                 done
                 for p in $pids; do
                     if [ -d "/proc/$p/fd" ]; then
-                        s=$(readlink /proc/$p/fd/* 2>/dev/null | grep "/\.codex/sessions/.*\.jsonl$" | head -n 1)
+                        s=$(readlink /proc/"$p"/fd/* 2>/dev/null | grep "/\.codex/sessions/.*\.jsonl$" | head -n 1)
                         if [ -n "$s" ] && [ -f "$s" ]; then
                             active_codex="$s"
                             break
                         fi
-                        lock=$(readlink /proc/$p/fd/* 2>/dev/null | grep "/thread-writer-locks/.*\.lock$" | head -n 1)
+                        lock=$(readlink /proc/"$p"/fd/* 2>/dev/null | grep "/thread-writer-locks/.*\.lock$" | head -n 1)
                         if [ -n "$lock" ]; then
                             th_id=$(basename "$lock" .lock)
                             s=$(find "$HOME/.codex/sessions" -name "*${th_id}*.jsonl" 2>/dev/null | head -n 1)

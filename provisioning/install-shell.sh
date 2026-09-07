@@ -7,6 +7,7 @@ set -euo pipefail
 trap 'touch /etc/devbox/.failed 2>/dev/null || true' ERR
 export DEBIAN_FRONTEND=noninteractive
 
+# shellcheck source=/dev/null
 . /etc/devbox/devbox.env
 U="$DEVBOX_USER"
 H="/home/$U"
@@ -29,8 +30,11 @@ if ! command -v yq >/dev/null 2>&1; then
   case "$arch" in amd64) ya=amd64 ;; arm64) ya=arm64 ;; *) ya= ;; esac
   YQ_VERSION="${YQ_VERSION:-v4.44.3}"
   if [ -n "$ya" ]; then
-    curl -fsSL "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${ya}" \
-      -o /usr/local/bin/yq && chmod +x /usr/local/bin/yq || log "yq install failed (skipping)"
+    if curl -fsSL "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${ya}" -o /usr/local/bin/yq; then
+      chmod +x /usr/local/bin/yq
+    else
+      log "yq install failed (skipping)"
+    fi
   fi
 fi
 
