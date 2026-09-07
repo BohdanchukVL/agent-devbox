@@ -128,14 +128,22 @@ resource "aws_key_pair" "this" {
   public_key = var.ssh_public_key
 }
 
+resource "terraform_data" "payload" {
+  input = "${var.git_sha256}:${var.install_docker}:${var.install_codex}:${var.install_claude}:${var.install_opencode}:${var.install_antigravity}:${var.install_browser}:${var.username}"
+}
+
 resource "aws_instance" "this" {
-  ami                         = data.aws_ami.ubuntu.id
-  instance_type               = var.instance_type
-  subnet_id                   = aws_subnet.this.id
-  vpc_security_group_ids      = [aws_security_group.this.id]
-  key_name                    = aws_key_pair.this.key_name
-  user_data                   = local.user_data
-  user_data_replace_on_change = true
+  ami                    = data.aws_ami.ubuntu.id
+  instance_type          = var.instance_type
+  subnet_id              = aws_subnet.this.id
+  vpc_security_group_ids = [aws_security_group.this.id]
+  key_name               = aws_key_pair.this.key_name
+  user_data              = local.user_data
+
+  lifecycle {
+    ignore_changes       = [user_data]
+    replace_triggered_by = [terraform_data.payload]
+  }
 
   metadata_options {
     http_endpoint               = "enabled"

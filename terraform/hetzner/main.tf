@@ -70,6 +70,10 @@ resource "hcloud_volume" "workspace" {
   location = var.location
 }
 
+resource "terraform_data" "payload" {
+  input = "${var.git_sha256}:${var.install_docker}:${var.install_codex}:${var.install_claude}:${var.install_opencode}:${var.install_antigravity}:${var.install_browser}:${var.username}"
+}
+
 resource "hcloud_server" "this" {
   name         = var.name
   server_type  = var.server_type
@@ -78,6 +82,11 @@ resource "hcloud_server" "this" {
   ssh_keys     = [hcloud_ssh_key.this.id]
   firewall_ids = [hcloud_firewall.this.id]
   user_data    = local.user_data
+
+  lifecycle {
+    ignore_changes       = [user_data]
+    replace_triggered_by = [terraform_data.payload]
+  }
 }
 
 resource "hcloud_volume_attachment" "workspace" {

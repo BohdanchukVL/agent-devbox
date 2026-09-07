@@ -106,6 +106,10 @@ resource "azurerm_network_interface_security_group_association" "this" {
   network_security_group_id = azurerm_network_security_group.this.id
 }
 
+resource "terraform_data" "payload" {
+  input = "${var.git_sha256}:${var.install_docker}:${var.install_codex}:${var.install_claude}:${var.install_opencode}:${var.install_antigravity}:${var.install_browser}:${var.username}"
+}
+
 resource "azurerm_linux_virtual_machine" "this" {
   name                  = var.name
   location              = azurerm_resource_group.this.location
@@ -114,6 +118,11 @@ resource "azurerm_linux_virtual_machine" "this" {
   admin_username        = var.username
   network_interface_ids = [azurerm_network_interface.this.id]
   custom_data           = base64encode(local.user_data)
+
+  lifecycle {
+    ignore_changes       = [custom_data]
+    replace_triggered_by = [terraform_data.payload]
+  }
 
   admin_ssh_key {
     username   = var.username
