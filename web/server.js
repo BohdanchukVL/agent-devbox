@@ -80,13 +80,22 @@ function getPaneCwd(sessionName) {
   return fs.existsSync('/workspace') ? '/workspace' : (process.env.HOME || '/home/dev');
 }
 
-function isAllowedOrigin(origin, hostHeader) {
+function isAllowedOrigin(origin, hostHeader, forwardedHost) {
   if (!origin) return true; // Direct non-browser requests
   try {
     const originUrl = new URL(origin);
     const originHost = originUrl.host;
-    // Strict host match or explicitly configured origin (no wildcards)
-    if (originHost === hostHeader) return true;
+    const originHostname = originUrl.hostname;
+
+    // Strict host match against Host header or X-Forwarded-Host (e.g. from tailscale serve)
+    if (originHost === hostHeader || originHostname === hostHeader) return true;
+    if (forwardedHost && (originHost === forwardedHost || originHostname === forwardedHost)) return true;
+
+    // Compare hostnames ignoring port if headers include port
+    const hostNameOnly = (hostHeader || '').split(':')[0];
+    const fwdNameOnly = (forwardedHost || '').split(':')[0];
+    if (originHostname === hostNameOnly || (fwdNameOnly && originHostname === fwdNameOnly)) return true;
+
     if (ALLOWED_ORIGIN && origin === ALLOWED_ORIGIN) return true;
   } catch {}
   return false;
@@ -118,12 +127,13 @@ function checkAuth(req, url) {
 
 const server = http.createServer((req, res) => {
   const hostHeader = req.headers.host || 'localhost';
+  const forwardedHost = req.headers['x-forwarded-host'];
   const url = new URL(req.url, `http://${hostHeader}`);
   const pathname = url.pathname;
   const origin = req.headers.origin;
 
   // Origin check & CORS: restrict to same-origin / allowed hosts
-  if (origin && isAllowedOrigin(origin, hostHeader)) {
+  if (origin && isAllowedOrigin(origin, hostHeader, forwardedHost)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -309,12 +319,13 @@ wss.on('close', () => {
 
 wss.on('connection', (ws, req) => {
   const hostHeader = req.headers.host || 'localhost';
+  const forwardedHost = req.headers['x-forwarded-host'];
   const url = new URL(req.url, `http://${hostHeader}`);
   const origin = req.headers.origin;
 
   // Cross-Site WebSocket Hijacking (CSWSH) protection
-  if (origin && !isAllowedOrigin(origin, hostHeader)) {
-    console.warn(`[ws] rejected connection: unauthorized origin "${origin}" for host "${hostHeader}"`);
+  if (origin && !isAllowedOrigin(origin, hostHeader, forwardedHost)) {
+    console.warn(`[ws] rejected connection: unauthorized origin "${origin}" for host "${hostHeader}" (forwarded: "${forwardedHost || 'none'}")`);
     ws.close(1008, 'Origin not allowed');
     return;
   }
