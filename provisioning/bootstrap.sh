@@ -16,13 +16,11 @@ err_report() {
 trap 'err_report $? "$BASH_COMMAND" "$LINENO"' ERR
 
 if [ -f /etc/devbox/devbox.env ]; then
-  set -a
   . /etc/devbox/devbox.env
-  set +a
 fi
 
 DEVBOX_USER="${DEVBOX_USER:-dev}"
-PROVISIONING_REPO="${PROVISIONING_REPO:-BohdanchukVL/agent-devbox}"
+PROVISIONING_REPO="${PROVISIONING_REPO:-}"
 PROVISIONING_REF="${PROVISIONING_REF:-main}"
 PROVISIONING_TOKEN="${PROVISIONING_TOKEN:-}"
 PROVISIONING_SHA256="${PROVISIONING_SHA256:-}"
@@ -72,8 +70,9 @@ fi
 
 # Scrub sensitive GitHub token if it was provided
 if [ -f /etc/devbox/devbox.env ] && grep -q '^PROVISIONING_TOKEN=' /etc/devbox/devbox.env; then
-  sed -i 's/^PROVISIONING_TOKEN=.*/PROVISIONING_TOKEN=/' /etc/devbox/devbox.env
+  sed -i '/^PROVISIONING_TOKEN=/d' /etc/devbox/devbox.env 2>/dev/null || true
 fi
+unset PROVISIONING_TOKEN TAILSCALE_AUTHKEY
 
 # Create symlinks in /opt/devbox for files under /opt/devbox/provisioning
 if [ -d /opt/devbox/provisioning ]; then

@@ -55,20 +55,27 @@ npm install -g pnpm
 
 if [ "$INSTALL_DOCKER" = "true" ]; then
   log "installing Docker"
-  curl -fsSL https://get.docker.com | sh
-  usermod -aG docker "$DEVBOX_USER"
-  systemctl enable --now docker
+  env -u TAILSCALE_AUTHKEY -u PROVISIONING_TOKEN sh -c 'curl -fsSL https://get.docker.com | sh' || log "warning: docker installation failed (continuing)"
+  usermod -aG docker "$DEVBOX_USER" 2>/dev/null || true
+  systemctl enable --now docker 2>/dev/null || true
 fi
 
 log "installing Tailscale"
-curl -fsSL https://tailscale.com/install.sh | sh
-if [ -n "${TAILSCALE_AUTHKEY:-}" ]; then
-  log "joining Tailscale network"
-  tailscale up --authkey="${TAILSCALE_AUTHKEY}" --ssh --hostname="agent-devbox" || log "Tailscale join failed (check auth key)"
-  # Scrub sensitive auth key from disk immediately after joining
-  sed -i '/^TAILSCALE_AUTHKEY=/d' /etc/devbox/devbox.env 2>/dev/null || true
-  unset TAILSCALE_AUTHKEY
+if curl -fsSL https://tailscale.com/install.sh | sh; then
+  if [ -n "${TAILSCALE_AUTHKEY:-}" ]; then
+    log "joining Tailscale network"
+    if ! tailscale up --authkey="${TAILSCALE_AUTHKEY}" --ssh --hostname="agent-devbox"; then
+      log "WARNING: Tailscale join failed (check auth key)"
+      touch /etc/devbox/.failed_tailscale
+    fi
+  fi
+else
+  log "WARNING: tailscale install script failed (continuing)"
+  touch /etc/devbox/.failed_tailscale
 fi
+# Scrub sensitive auth key from disk immediately after joining
+sed -i '/^TAILSCALE_AUTHKEY=/d' /etc/devbox/devbox.env 2>/dev/null || true
+unset TAILSCALE_AUTHKEY
 
 log "setting up /workspace"
 mkdir -p /workspace

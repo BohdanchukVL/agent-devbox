@@ -138,27 +138,34 @@ if [ -d "/opt/devbox/web" ]; then
   cp -r /opt/devbox/web/* "$WEB_DIR/"
   chown -R "$U:$U" "$WEB_DIR"
 
-  # Generate or configure web gateway token
+  # Generate or configure web gateway token (guaranteed non-empty)
   TOKEN="${DEVBOX_WEB_TOKEN:-}"
   if [ -z "$TOKEN" ]; then
-    TOKEN=$(openssl rand -hex 16 2>/dev/null || true)
+    TOKEN=$(openssl rand -hex 16 2>/dev/null || od -vN 16 -An -tx1 /dev/urandom 2>/dev/null | tr -d ' \n' || echo "devbox-$(date +%s%N)")
   fi
-  if [ -n "$TOKEN" ]; then
-    echo "DEVBOX_WEB_TOKEN=$TOKEN" > "$H/.devbox/web.env"
-    chmod 0600 "$H/.devbox/web.env"
-    chown "$U:$U" "$H/.devbox/web.env"
-  fi
+  echo "DEVBOX_WEB_TOKEN=$TOKEN" > "$H/.devbox/web.env"
+  chmod 0600 "$H/.devbox/web.env"
+  chown "$U:$U" "$H/.devbox/web.env"
 
   # Install web gateway dependencies
   sudo -u "$U" -H bash -c "cd '$WEB_DIR' && (npm ci --omit=dev 2>/dev/null || npm install --omit=dev)" || true
 
-  # Setup systemd user service if present
+  # Setup systemd user service
   SYSTEMD_USER_DIR="$H/.config/systemd/user"
   install -d -o "$U" -g "$U" "$SYSTEMD_USER_DIR"
   if [ -f "$WEB_DIR/devbox-web.service" ]; then
     install -m 0644 -o "$U" -g "$U" "$WEB_DIR/devbox-web.service" "$SYSTEMD_USER_DIR/devbox-web.service"
     loginctl enable-linger "$U" 2>/dev/null || true
-    sudo -u "$U" -H bash -c "export XDG_RUNTIME_DIR=\"/run/user/\$(id -u)\"; systemctl --user daemon-reload 2>/dev/null; systemctl --user enable --now devbox-web.service 2>/dev/null" || true
+    U_UID=$(id -u "$U")
+    install -d -m 0700 -o "$U" -g "$U" "/run/user/$U_UID"
+    systemctl --user -M "$U@" daemon-reload 2>/dev/null || true
+    systemctl --user -M "$U@" enable --now devbox-web.service 2>/dev/null || true
+  fi
+
+  # If Tailscale is running, expose port 7681 securely with MagicDNS HTTPS inside Tailnet
+  if command -v tailscale >/dev/null 2>&1 && tailscale ip -4 >/dev/null 2>&1; then
+    log "configuring tailscale serve for devbox-web (port 7681)..."
+    tailscale serve --bg 7681 2>/dev/null || true
   fi
 fi
 

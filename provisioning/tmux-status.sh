@@ -48,24 +48,32 @@ fmt_tokens() {
     fi
 }
 
-case "$1" in
-cwd)
-    dir="${2:-$PWD}"
-    case "$dir" in
-      "$HOME")   printf '~'; exit 0 ;;
-      "$HOME"/*) dir="~${dir#"$HOME"}" ;;
+render_cwd() {
+    local d="${1:-$PWD}"
+    case "$d" in
+      "$HOME")   printf '~'; return ;;
+      "$HOME"/*) d="~${d#"$HOME"}" ;;
     esac
-    # keep it short: deep paths collapse to …/<parent>/<leaf>
-    printf '%s' "$dir" | awk -F/ 'NF<=3 { printf "%s", $0; next } { printf "…/%s/%s", $(NF-1), $NF }'
-    ;;
-git)
-    dir="${2:-$HOME}"
-    b=$(cd "$dir" 2>/dev/null && git symbolic-ref --short HEAD 2>/dev/null) || exit 0
-    [ -n "$b" ] || exit 0
-    if (cd "$dir" 2>/dev/null && { ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null || [ -n "$(git ls-files --others --exclude-standard 2>/dev/null | head -n 1)" ]; }); then
+    printf '%s' "$d" | awk -F/ 'NF<=3 { printf "%s", $0; next } { printf "…/%s/%s", $(NF-1), $NF }'
+}
+
+render_git() {
+    local d="${1:-$HOME}"
+    local b
+    b=$(cd "$d" 2>/dev/null && git symbolic-ref --short HEAD 2>/dev/null) || return 0
+    [ -n "$b" ] || return 0
+    if (cd "$d" 2>/dev/null && { ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null || [ -n "$(git status --porcelain -uno 2>/dev/null | head -n 1)" ]; }); then
         b="$b*"
     fi
     printf '%s' "$b"
+}
+
+case "$1" in
+cwd)
+    render_cwd "${2:-$PWD}"
+    ;;
+git)
+    render_git "${2:-$HOME}"
     ;;
 ai)
     command -v jq >/dev/null 2>&1 || exit 0
@@ -75,12 +83,12 @@ ai)
     pane_pid="${4:-}"
     win_id="${5:-}"
 
-    # Cache AI segment output per pane for 5s to avoid heavy repetitive checks
+    # Cache AI segment output per pane for 12s to avoid heavy repetitive checks across 5s status intervals
     cache_file="/tmp/.devbox-ai-cache-${pane_pid:-default}"
     now=$(date +%s 2>/dev/null || echo 0)
     if [ -f "$cache_file" ]; then
         cache_mtime=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null || echo 0)
-        if [ $(( now - cache_mtime )) -lt 5 ]; then
+        if [ $(( now - cache_mtime )) -lt 12 ]; then
             cat "$cache_file" 2>/dev/null
             exit 0
         fi
@@ -134,8 +142,11 @@ $win_panes_info
 EOF
     fi
 
-    # If no agent is running in this window, exit cleanly — do not show stale history
-    [ -z "$running_agent" ] && exit 0
+    # If no agent is running in this window, cache empty result and exit cleanly
+    if [ -z "$running_agent" ]; then
+        : > "$cache_file" 2>/dev/null
+        exit 0
+    fi
 
     case "$running_agent" in
     claude)
@@ -170,7 +181,7 @@ EOF
             ' "$claude_json" 2>/dev/null)
 
             if [ -n "$claude_data" ]; then
-                IFS="$(printf '\t')" read -r cl_cost cl_sess_id cl_total_tokens <<EOF
+                IFS="$(printf '\t')" read -r cl_cost cl_sess_id _ <<EOF
 $claude_data
 EOF
                 slug=$(printf '%s' "$proj_dir" | tr '/' '-')
@@ -424,23 +435,12 @@ all)
     win_id="${5:-}"
 
     # 1. cwd segment
-    cwd_dir="$dir"
-    case "$cwd_dir" in
-      "$HOME")   cwd_str='~' ;;
-      "$HOME"/*) cwd_str="~${cwd_dir#"$HOME"}" ;;
-      *)         cwd_str="$cwd_dir" ;;
-    esac
-    cwd_fmt=$(printf '%s' "$cwd_str" | awk -F/ 'NF<=3 { printf "%s", $0; next } { printf "…/%s/%s", $(NF-1), $NF }')
+    cwd_fmt=$(render_cwd "$dir")
 
     # 2. git segment
+    git_str=$(render_git "$dir")
     git_fmt=""
-    b=$(cd "$dir" 2>/dev/null && git symbolic-ref --short HEAD 2>/dev/null)
-    if [ -n "$b" ]; then
-        if (cd "$dir" 2>/dev/null && { ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null || [ -n "$(git ls-files --others --exclude-standard 2>/dev/null | head -n 1)" ]; }); then
-            b="$b*"
-        fi
-        git_fmt=" #[fg=colour108]$b"
-    fi
+    [ -n "$git_str" ] && git_fmt=" #[fg=colour108]$git_str"
 
     # 3. ai segment
     ai_fmt=$("$0" ai "$dir" "$pane_cmd" "$pane_pid" "$win_id")
@@ -453,6 +453,6 @@ all)
         load_fmt="$load_val"
     fi
 
-    printf "#[fg=colour180,bold]%s%s%s%s #[fg=colour241]│ #[fg=colour246]%%H:%%M " "$cwd_fmt" "$git_fmt" "$ai_fmt" "$load_fmt"
+    printf "#[fg=colour180,bold]%s%s%s%s " "$cwd_fmt" "$git_fmt" "$ai_fmt" "$load_fmt"
     ;;
 esac
