@@ -285,10 +285,10 @@ async function handleQuery(args) {
     return { error: 'Security restriction: Multiple SQL statements are not permitted.' };
   }
 
-  // Disallow administrative, file I/O, sleep, and dblink functions
-  const dangerousPatterns = /\b(pg_sleep|pg_read_file|pg_read_binary_file|pg_write_file|pg_ls_dir|dblink|dblink_exec|lo_import|lo_export|query_to_xml)\b/i;
-  if (dangerousPatterns.test(query)) {
-    return { error: 'Security restriction: Calling administrative, file I/O, network, or sleep functions is not permitted.' };
+  // Disallow administrative, termination, config manipulation, file I/O, sleep, and dblink functions
+  const dangerousPatterns = /\b(pg_sleep(_for|_until)?|set_config|pg_terminate_backend|pg_cancel_backend|pg_reload_conf|pg_rotate_logfile|pg_read_file|pg_read_binary_file|pg_write_file|pg_ls_dir|dblink(_exec)?|lo_import|lo_export|lo_create|lo_unlink|query_to_xml)\b/i;
+  if (dangerousPatterns.test(query) || /statement_timeout/i.test(query)) {
+    return { error: 'Security restriction: Calling administrative, process control, config-override, file I/O, network, or sleep functions is not permitted.' };
   }
 
   const limit = Math.min(parseInt(args.limit || '25', 10), 100);

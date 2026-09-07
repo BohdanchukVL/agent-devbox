@@ -1,6 +1,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { WebSocketServer } from 'ws';
@@ -13,6 +14,13 @@ const __dirname = path.dirname(__filename);
 const PORT = parseInt(process.env.PORT || '7681', 10);
 const HOST = process.env.HOST || '127.0.0.1';
 const AUTH_TOKEN = process.env.DEVBOX_WEB_TOKEN || process.env.AUTH_TOKEN || '';
+const ALLOWED_ORIGIN = process.env.DEVBOX_ALLOWED_ORIGIN || '';
+
+if (!AUTH_TOKEN) {
+  console.error('[devbox-web ERROR] DEVBOX_WEB_TOKEN (or AUTH_TOKEN) environment variable is required. Refusing to start without authentication.');
+  process.exit(1);
+}
+
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const NODE_MODULES = path.join(__dirname, 'node_modules');
 
@@ -77,19 +85,34 @@ function isAllowedOrigin(origin, hostHeader) {
   try {
     const originUrl = new URL(origin);
     const originHost = originUrl.host;
+    // Strict host match or explicitly configured origin (no wildcards)
     if (originHost === hostHeader) return true;
-    if (originUrl.hostname === 'localhost' || originUrl.hostname === '127.0.0.1') return true;
-    if (originUrl.hostname.endsWith('.ts.net')) return true; // Tailscale MagicDNS
+    if (ALLOWED_ORIGIN && origin === ALLOWED_ORIGIN) return true;
   } catch {}
   return false;
 }
 
+function safeTokenCompare(input) {
+  if (typeof input !== 'string' || !input) return false;
+  const bufA = Buffer.from(input);
+  const bufB = Buffer.from(AUTH_TOKEN);
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
 function checkAuth(req, url) {
-  if (!AUTH_TOKEN) return true; // Auth not required if no token set
   const authHeader = req.headers['authorization'] || '';
-  if (authHeader === `Bearer ${AUTH_TOKEN}` || authHeader === AUTH_TOKEN) return true;
+  if (authHeader.startsWith('Bearer ')) {
+    if (safeTokenCompare(authHeader.slice(7))) return true;
+  } else if (safeTokenCompare(authHeader)) {
+    return true;
+  }
+  const customHeader = req.headers['x-devbox-token'] || '';
+  if (safeTokenCompare(customHeader)) return true;
+
   const tokenQuery = url.searchParams.get('token');
-  if (tokenQuery === AUTH_TOKEN) return true;
+  if (tokenQuery && safeTokenCompare(tokenQuery)) return true;
+
   return false;
 }
 
