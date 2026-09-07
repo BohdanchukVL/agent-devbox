@@ -18,5 +18,9 @@ devbox.env
 # Rust (cli/)
 target/
 
+# Node (web/)
+node_modules/
+*.log
+
 # OS
 .DS_Store

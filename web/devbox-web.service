@@ -1,0 +1,16 @@
+[Unit]
+Description=Agent Devbox Web Gateway
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.devbox/web
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=3
+Environment=NODE_ENV=production
+Environment=PORT=7681
+Environment=HOST=0.0.0.0
+
+[Install]
+WantedBy=default.target

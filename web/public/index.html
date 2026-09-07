@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Agent Devbox Web</title>
+  <link rel="stylesheet" href="/vendor/xterm/css/xterm.css" onerror="this.href='https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css'">
+  <style>
+    :root {
+      --bg: #141414;
+      --bg-panel: #1e1e1e;
+      --border: #2d2d2d;
+      --text: #e0e0e0;
+      --text-dim: #888888;
+      --accent: #008787;
+      --accent-light: #20b2aa;
+      --success: #5f875f;
+      --warning: #dfaf5f;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      height: 100dvh;
+      width: 100vw;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* Top Bar */
+    header {
+      height: 42px;
+      min-height: 42px;
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 12px;
+      z-index: 10;
+      user-select: none;
+    }
+
+    .brand-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .badge-devbox {
+      background: var(--accent);
+      color: #fff;
+      font-weight: 700;
+      font-size: 11px;
+      padding: 3px 7px;
+      border-radius: 4px;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+
+    .session-badge {
+      font-size: 12px;
+      color: var(--text-dim);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--warning);
+      display: inline-block;
+      transition: background 0.3s;
+    }
+    .status-dot.connected { background: var(--success); }
+    .status-dot.disconnected { background: #d75f5f; }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .btn-action {
+      background: #2a2a2a;
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-size: 12px;
+      padding: 4px 9px;
+      border-radius: 4px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-family: inherit;
+      transition: background 0.15s;
+    }
+    .btn-action:hover { background: #383838; }
+    .btn-action:active { background: #444; }
+
+    /* Terminal Container */
+    #terminal-wrapper {
+      flex: 1;
+      width: 100%;
+      position: relative;
+      background: var(--bg);
+      overflow: hidden;
+    }
+
+    #terminal {
+      width: 100%;
+      height: 100%;
+    }
+
+    /* Mobile Toolbar */
+    #mobile-bar {
+      display: none;
+      background: var(--bg-panel);
+      border-top: 1px solid var(--border);
+      padding: 6px 8px;
+      padding-bottom: max(6px, env(safe-area-inset-bottom));
+      gap: 6px;
+      overflow-x: auto;
+      white-space: nowrap;
+      user-select: none;
+      z-index: 15;
+    }
+
+    .mobile-btn {
+      background: #2b2b2b;
+      border: 1px solid #3d3d3d;
+      color: var(--text);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 8px 12px;
+      border-radius: 5px;
+      cursor: pointer;
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .mobile-btn:active {
+      background: var(--accent);
+      color: #fff;
+    }
+    .mobile-btn.highlight {
+      background: #334444;
+      border-color: var(--accent);
+      color: #7fdfdf;
+    }
+
+    /* Drag and drop overlay */
+    #drop-overlay {
+      display: none;
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0, 135, 135, 0.25);
+      border: 3px dashed var(--accent-light);
+      backdrop-filter: blur(3px);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      color: #fff;
+      font-size: 18px;
+      font-weight: 600;
+      gap: 12px;
+      pointer-events: none;
+    }
+
+    /* Toast Notification */
+    #toast {
+      position: fixed;
+      bottom: 60px;
+      left: 50%;
+      transform: translateX(-50%) translateY(30px);
+      background: #252525;
+      border: 1px solid var(--border);
+      color: #fff;
+      padding: 10px 18px;
+      border-radius: 8px;
+      font-size: 13px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+      opacity: 0;
+      pointer-events: none;
+      transition: all 0.25s ease;
+      z-index: 200;
+      max-width: 90vw;
+      text-align: center;
+    }
+    #toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+    #toast.success { border-color: var(--success); }
+    #toast.error { border-color: #d75f5f; }
+
+    @media (max-width: 768px) {
+      #mobile-bar { display: flex; }
+      .desktop-only { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="brand-group">
+      <span class="status-dot" id="status-dot" title="Connecting..."></span>
+      <span class="badge-devbox">devbox</span>
+      <span class="session-badge" id="session-name">main-web</span>
+    </div>
+    <div class="header-actions">
+      <button class="btn-action" id="btn-zoom" title="Toggle zoom active pane">🔍 Zoom</button>
+      <button class="btn-action desktop-only" id="btn-upload" title="Upload Image / File">📎 Upload</button>
+    </div>
+  </header>
+
+  <div id="terminal-wrapper">
+    <div id="terminal"></div>
+    <div id="drop-overlay">
+      <svg width="48" height="48" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path>
+      </svg>
+      <span>Drop files to upload to .devbox-inbox</span>
+    </div>
+  </div>
+
+  <div id="mobile-bar">
+    <button class="mobile-btn highlight" id="m-btn-photo">📷 Фото</button>
+    <button class="mobile-btn highlight" id="m-btn-file">📎 Файл</button>
+    <button class="mobile-btn" id="m-btn-zoom">🔍 Zoom</button>
+    <button class="mobile-btn" id="m-btn-esc">Esc</button>
+    <button class="mobile-btn" id="m-btn-tab">Tab</button>
+    <button class="mobile-btn" id="m-btn-ctrl-c">Ctrl-C</button>
+    <button class="mobile-btn" id="m-btn-up">▲</button>
+    <button class="mobile-btn" id="m-btn-down">▼</button>
+    <button class="mobile-btn" id="m-btn-slash">/</button>
+    <button class="mobile-btn" id="m-btn-enter">↵</button>
+  </div>
+
+  <!-- Hidden file inputs -->
+  <input type="file" id="file-input-photo" accept="image/*" capture="environment" style="display: none;">
+  <input type="file" id="file-input-any" style="display: none;">
+
+  <div id="toast"></div>
+
+  <!-- Load XTerm Scripts with CDN fallback -->
+  <script src="/vendor/xterm/lib/xterm.js" onerror="loadCdnXterm()"></script>
+  <script src="/vendor/addon-fit/lib/addon-fit.js" onerror="loadCdnFit()"></script>
+
+  <script>
+    function loadCdnXterm() {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js';
+      document.head.appendChild(s);
+    }
+    function loadCdnFit() {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js';
+      document.head.appendChild(s);
+    }
+  </script>
+
+  <script>
+    const isMobile = window.innerWidth <= 768 || ('ontouchstart' in window);
+    const clientType = isMobile ? 'mobile' : 'desktop';
+    const sessionName = clientType === 'mobile' ? 'main-mobile' : 'main-web';
+
+    document.getElementById('session-name').textContent = sessionName;
+
+    function showToast(msg, type = 'success') {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.className = `show ${type}`;
+      setTimeout(() => { t.className = ''; }, 3500);
+    }
+
+    // ── XTerm setup ────────────────────────────────────────────────────────
+    let term, fitAddon, ws;
+    const termContainer = document.getElementById('terminal');
+    const statusDot = document.getElementById('status-dot');
+
+    function initTerminal() {
+      if (typeof Terminal === 'undefined' || typeof FitAddon === 'undefined') {
+        setTimeout(initTerminal, 100);
+        return;
+      }
+
+      term = new Terminal({
+        cursorBlink: true,
+        fontSize: isMobile ? 13 : 15,
+        fontFamily: 'ui-monospace, "SF Mono", Menlo, Monaco, "Cascadia Code", monospace',
+        theme: {
+          background: '#141414',
+          foreground: '#d4d4d4',
+          cursor: '#20b2aa',
+          selectionBackground: '#005f5f',
+          black: '#1c1c1c',
+          red: '#d75f5f',
+          green: '#87af87',
+          yellow: '#dfaf5f',
+          blue: '#87afd7',
+          magenta: '#af87af',
+          cyan: '#5fafaf',
+          white: '#e4e4e4',
+          brightBlack: '#4e4e4e',
+          brightRed: '#ff5f5f',
+          brightGreen: '#afdfaf',
+          brightYellow: '#ffff87',
+          brightBlue: '#afffff',
+          brightMagenta: '#dfafff',
+          brightCyan: '#87ffff',
+          brightWhite: '#ffffff'
+        },
+        allowProposedApi: true
+      });
+
+      fitAddon = new FitAddon.FitAddon();
+      term.loadAddon(fitAddon);
+      term.open(termContainer);
+      fitAddon.fit();
+
+      connectWs();
+
+      let resizeTimer = null;
+      window.addEventListener('resize', () => {
+        if (!term || !fitAddon) return;
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+          fitAddon.fit();
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+          }
+        }, 80);
+      });
+    }
+
+    function connectWs() {
+      statusDot.className = 'status-dot';
+      statusDot.title = 'Connecting...';
+
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${proto}//${location.host}/ws?client=${clientType}&cols=${term.cols}&rows=${term.rows}`;
+
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        statusDot.className = 'status-dot connected';
+        statusDot.title = `Connected (${sessionName})`;
+        ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      };
+
+      ws.onmessage = (event) => {
+        term.write(event.data);
+      };
+
+      ws.onclose = () => {
+        statusDot.className = 'status-dot disconnected';
+        statusDot.title = 'Disconnected (reconnecting in 2s...)';
+        setTimeout(connectWs, 2000);
+      };
+
+      ws.onerror = () => {
+        ws.close();
+      };
+
+      term.onData(data => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(data);
+        }
+      });
+    }
+
+    // ── File upload logic ──────────────────────────────────────────────────
+    async function uploadFile(file) {
+      if (!file) return;
+      showToast(`Uploading ${file.name} …`, 'success');
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      try {
+        const res = await fetch(`/api/upload?session=${sessionName}`, {
+          method: 'POST',
+          body: formData
+        });
+        const json = await res.json();
+        if (json.ok && json.file) {
+          showToast(`✓ Inserted: ${json.file.path}`, 'success');
+        } else {
+          showToast(`Upload failed: ${json.error || 'unknown'}`, 'error');
+        }
+      } catch (err) {
+        showToast(`Upload error: ${err.message}`, 'error');
+      }
+    }
+
+    // 1. Clipboard paste listener (Cmd-V / Ctrl-V images)
+    window.addEventListener('paste', (e) => {
+      const items = (e.clipboardData || e.originalEvent.clipboardData).items;
+      let handled = false;
+      for (const item of items) {
+        if (item.kind === 'file') {
+          const file = item.getAsFile();
+          if (file) {
+            e.preventDefault();
+            uploadFile(file);
+            handled = true;
+            break;
+          }
+        }
+      }
+    });
+
+    // 2. Drag & Drop
+    const wrapper = document.getElementById('terminal-wrapper');
+    const dropOverlay = document.getElementById('drop-overlay');
+    let dragCounter = 0;
+
+    wrapper.addEventListener('dragenter', (e) => {
+      e.preventDefault();
+      dragCounter++;
+      dropOverlay.style.display = 'flex';
+    });
+
+    wrapper.addEventListener('dragleave', (e) => {
+      e.preventDefault();
+      dragCounter--;
+      if (dragCounter <= 0) {
+        dragCounter = 0;
+        dropOverlay.style.display = 'none';
+      }
+    });
+
+    wrapper.addEventListener('dragover', (e) => {
+      e.preventDefault();
+    });
+
+    wrapper.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dragCounter = 0;
+      dropOverlay.style.display = 'none';
+
+      if (e.dataTransfer && e.dataTransfer.files.length > 0) {
+        for (const file of e.dataTransfer.files) {
+          uploadFile(file);
+        }
+      }
+    });
+
+    // 3. Header Actions
+    async function triggerAction(action) {
+      try {
+        await fetch('/api/action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session: sessionName, action })
+        });
+      } catch {}
+    }
+
+    document.getElementById('btn-zoom').addEventListener('click', () => triggerAction('zoom'));
+    document.getElementById('m-btn-zoom').addEventListener('click', () => triggerAction('zoom'));
+
+    const photoInput = document.getElementById('file-input-photo');
+    const anyInput = document.getElementById('file-input-any');
+
+    document.getElementById('btn-upload').addEventListener('click', () => anyInput.click());
+    document.getElementById('m-btn-photo').addEventListener('click', () => photoInput.click());
+    document.getElementById('m-btn-file').addEventListener('click', () => anyInput.click());
+
+    photoInput.addEventListener('change', (e) => {
+      if (e.target.files && e.target.files[0]) {
+        uploadFile(e.target.files[0]);
+        photoInput.value = '';
+      }
+    });
+
+    anyInput.addEventListener('change', (e) => {
+      if (e.target.files && e.target.files[0]) {
+        uploadFile(e.target.files[0]);
+        anyInput.value = '';
+      }
+    });
+
+    // 4. Mobile key buttons
+    function sendKey(seq) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(seq);
+      }
+    }
+
+    document.getElementById('m-btn-esc').addEventListener('click', () => sendKey('\x1b'));
+    document.getElementById('m-btn-tab').addEventListener('click', () => sendKey('\t'));
+    document.getElementById('m-btn-ctrl-c').addEventListener('click', () => sendKey('\x03'));
+    document.getElementById('m-btn-up').addEventListener('click', () => sendKey('\x1b[A'));
+    document.getElementById('m-btn-down').addEventListener('click', () => sendKey('\x1b[B'));
+    document.getElementById('m-btn-slash').addEventListener('click', () => sendKey('/'));
+    document.getElementById('m-btn-enter').addEventListener('click', () => sendKey('\r'));
+
+    // Start
+    initTerminal();
+  </script>
+</body>
+</html>
