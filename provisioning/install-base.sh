@@ -38,11 +38,6 @@ EOF
   apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict 2>/dev/null || true
 fi
 
-cat > /etc/sysctl.d/99-userns.conf <<'EOF'
-kernel.apparmor_restrict_unprivileged_userns = 0
-EOF
-sysctl -p /etc/sysctl.d/99-userns.conf 2>/dev/null || true
-
 log "installing GitHub CLI"
 install -dm 0755 /etc/apt/keyrings
 curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -70,6 +65,9 @@ curl -fsSL https://tailscale.com/install.sh | sh
 if [ -n "${TAILSCALE_AUTHKEY:-}" ]; then
   log "joining Tailscale network"
   tailscale up --authkey="${TAILSCALE_AUTHKEY}" --ssh --hostname="agent-devbox" || log "Tailscale join failed (check auth key)"
+  # Scrub sensitive auth key from disk immediately after joining
+  sed -i '/^TAILSCALE_AUTHKEY=/d' /etc/devbox/devbox.env 2>/dev/null || true
+  unset TAILSCALE_AUTHKEY
 fi
 
 log "setting up /workspace"

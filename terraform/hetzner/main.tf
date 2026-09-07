@@ -1,6 +1,10 @@
 locals {
   use_volume = var.disk_size > 0
 
+  ssh_cidrs = var.ssh_allowed_cidrs != null ? var.ssh_allowed_cidrs : (
+    var.tailscale_authkey != "" ? [] : ["0.0.0.0/0", "::/0"]
+  )
+
   user_data = templatefile("${path.module}/../../provisioning/cloud-init.yaml", {
     username            = var.username
     ssh_public_key      = var.ssh_public_key
@@ -12,16 +16,13 @@ locals {
     install_browser     = var.install_browser
     tailscale_authkey   = var.tailscale_authkey
     workspace_device    = local.use_volume ? "/dev/disk/by-id/scsi-0HC_Volume_${hcloud_volume.workspace[0].id}" : ""
-    install_base        = file("${path.module}/../../provisioning/install-base.sh")
-    install_agents      = file("${path.module}/../../provisioning/install-agents.sh")
-    browser             = file("${path.module}/../../provisioning/install-browser.sh")
-    install_shell       = file("${path.module}/../../provisioning/install-shell.sh")
-
-    zshrc       = file("${path.module}/../../provisioning/zshrc")
-    motd        = file("${path.module}/../../provisioning/motd.sh")
-    tmux_conf   = file("${path.module}/../../provisioning/tmux.conf")
-    tmux_status = file("${path.module}/../../provisioning/tmux-status.sh")
-    osc7        = file("${path.module}/../../provisioning/osc7.sh")
+    bootstrap_script    = file("${path.module}/../../provisioning/bootstrap.sh")
+    git_repo            = var.git_repo
+    git_ref             = var.git_ref
+    git_token           = var.git_token
+    git_sha256          = var.git_sha256
+    tarball_url         = var.tarball_url
+    web_token           = var.web_token
   })
 }
 
@@ -33,12 +34,15 @@ resource "hcloud_ssh_key" "this" {
 resource "hcloud_firewall" "this" {
   name = "${var.name}-fw"
 
-  rule {
-    description = "SSH"
-    direction   = "in"
-    protocol    = "tcp"
-    port        = "22"
-    source_ips  = ["0.0.0.0/0", "::/0"]
+  dynamic "rule" {
+    for_each = length(local.ssh_cidrs) > 0 ? [1] : []
+    content {
+      description = "SSH"
+      direction   = "in"
+      protocol    = "tcp"
+      port        = "22"
+      source_ips  = local.ssh_cidrs
+    }
   }
 
   rule {

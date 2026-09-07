@@ -1,4 +1,8 @@
 locals {
+  ssh_cidrs = var.ssh_allowed_cidrs != null ? var.ssh_allowed_cidrs : (
+    var.tailscale_authkey != "" ? [] : ["*"]
+  )
+
   user_data = templatefile("${path.module}/../../provisioning/cloud-init.yaml", {
     username            = var.username
     ssh_public_key      = var.ssh_public_key
@@ -10,16 +14,13 @@ locals {
     install_browser     = var.install_browser
     tailscale_authkey   = var.tailscale_authkey
     workspace_device    = ""
-    install_base        = file("${path.module}/../../provisioning/install-base.sh")
-    install_agents      = file("${path.module}/../../provisioning/install-agents.sh")
-    browser             = file("${path.module}/../../provisioning/install-browser.sh")
-    install_shell       = file("${path.module}/../../provisioning/install-shell.sh")
-
-    zshrc       = file("${path.module}/../../provisioning/zshrc")
-    motd        = file("${path.module}/../../provisioning/motd.sh")
-    tmux_conf   = file("${path.module}/../../provisioning/tmux.conf")
-    tmux_status = file("${path.module}/../../provisioning/tmux-status.sh")
-    osc7        = file("${path.module}/../../provisioning/osc7.sh")
+    bootstrap_script    = file("${path.module}/../../provisioning/bootstrap.sh")
+    git_repo            = var.git_repo
+    git_ref             = var.git_ref
+    git_token           = var.git_token
+    git_sha256          = var.git_sha256
+    tarball_url         = var.tarball_url
+    web_token           = var.web_token
   })
 }
 
@@ -47,16 +48,35 @@ resource "azurerm_network_security_group" "this" {
   location            = azurerm_resource_group.this.location
   resource_group_name = azurerm_resource_group.this.name
 
-  security_rule {
-    name                       = "SSH"
-    priority                   = 100
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    source_port_range          = "*"
-    destination_port_range     = "22"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
+  dynamic "security_rule" {
+    for_each = length(local.ssh_cidrs) > 0 ? [1] : []
+    content {
+      name                       = "SSH"
+      priority                   = 100
+      direction                  = "Inbound"
+      access                     = "Allow"
+      protocol                   = "Tcp"
+      source_port_range          = "*"
+      destination_port_range     = "22"
+      source_address_prefix      = length(local.ssh_cidrs) == 1 && local.ssh_cidrs[0] == "*" ? "*" : null
+      source_address_prefixes    = length(local.ssh_cidrs) > 0 && !(length(local.ssh_cidrs) == 1 && local.ssh_cidrs[0] == "*") ? local.ssh_cidrs : null
+      destination_address_prefix = "*"
+    }
+  }
+
+  dynamic "security_rule" {
+    for_each = var.tailscale_authkey != "" ? [1] : []
+    content {
+      name                       = "Tailscale-WireGuard"
+      priority                   = 110
+      direction                  = "Inbound"
+      access                     = "Allow"
+      protocol                   = "Udp"
+      source_port_range          = "*"
+      destination_port_range     = "41641"
+      source_address_prefix      = "*"
+      destination_address_prefix = "*"
+    }
   }
 }
 

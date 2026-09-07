@@ -71,3 +71,48 @@ variable "tailscale_authkey" {
   default     = ""
   sensitive   = true
 }
+
+variable "ssh_allowed_cidrs" {
+  description = "CIDR blocks allowed to connect to SSH (port 22). If null and tailscale_authkey is set, port 22 is closed from internet."
+  type        = list(string)
+  default     = null
+}
+
+variable "git_repo" {
+  description = "GitHub repository (owner/repo) to pull provisioning scripts from"
+  type        = string
+  default     = "BohdanchukVL/agent-devbox"
+}
+
+variable "git_ref" {
+  description = "Git ref (branch, tag, or commit SHA) to pull provisioning scripts from"
+  type        = string
+  default     = "main"
+}
+
+variable "git_token" {
+  description = "GitHub personal access token for private repository provisioning payload"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "git_sha256" {
+  description = "Optional SHA256 checksum to verify provisioning payload archive"
+  type        = string
+  default     = ""
+}
+
+variable "tarball_url" {
+  description = "Optional custom URL pointing directly to a provisioning tarball archive"
+  type        = string
+  default     = ""
+}
+
+variable "web_token" {
+  description = "Authentication token for devbox-web companion gateway"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
