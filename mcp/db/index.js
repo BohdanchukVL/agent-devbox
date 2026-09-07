@@ -12,25 +12,43 @@ import path from 'node:path';
 
 const { Client: PgClient } = pg;
 
+// Helper: Escape double quotes in SQLite identifiers
+function escapeSqliteIdent(identifier) {
+  return String(identifier).replace(/"/g, '""');
+}
+
 // Helper: Discover active database if none provided
 function resolveConnection(inputTarget) {
   if (inputTarget && typeof inputTarget === 'string' && inputTarget.trim()) {
-    return inputTarget.trim();
+    const target = inputTarget.trim();
+    if (isPostgres(target)) {
+      try {
+        const u = new URL(target);
+        if (u.protocol !== 'postgres:' && u.protocol !== 'postgresql:') {
+          return null;
+        }
+      } catch {
+        return null;
+      }
+    }
+    return target;
   }
 
-  // 1. Environment variable
-  if (process.env.DATABASE_URL) {
+  // 1. Environment variable (unless disabled via DEVBOX_DB_DISABLE_ENV)
+  if (process.env.DEVBOX_DB_DISABLE_ENV !== 'true' && process.env.DATABASE_URL) {
     return process.env.DATABASE_URL;
   }
 
-  // 2. Check .env in cwd
-  const envPath = path.join(process.cwd(), '.env');
-  if (fs.existsSync(envPath)) {
-    try {
-      const content = fs.readFileSync(envPath, 'utf8');
-      const match = content.match(/^DATABASE_URL\s*=\s*["']?([^"'\r\n]+)["']?/m);
-      if (match && match[1]) return match[1].trim();
-    } catch {}
+  // 2. Check .env in cwd (unless disabled via DEVBOX_DB_DISABLE_ENV)
+  if (process.env.DEVBOX_DB_DISABLE_ENV !== 'true') {
+    const envPath = path.join(process.cwd(), '.env');
+    if (fs.existsSync(envPath)) {
+      try {
+        const content = fs.readFileSync(envPath, 'utf8');
+        const match = content.match(/^DATABASE_URL\s*=\s*["']?([^"'\r\n]+)["']?/m);
+        if (match && match[1]) return match[1].trim();
+      } catch {}
+    }
   }
 
   // 3. Search for SQLite files in cwd or ./data
@@ -136,7 +154,7 @@ async function handleListTables(args) {
         let count = 0;
         if (r.type === 'table') {
           try {
-            const countRow = db.prepare(`SELECT count(*) as count FROM "${r.name}"`).get();
+            const countRow = db.prepare(`SELECT count(*) as count FROM "${escapeSqliteIdent(r.name)}"`).get();
             count = countRow?.count ?? 0;
           } catch {}
         }
@@ -207,15 +225,16 @@ async function handleDescribeTable(args) {
 
     try {
       const db = new sqlite.DatabaseSync(dbPath, { readOnly: true });
-      const colRows = db.prepare(`PRAGMA table_info("${table}")`).all();
+      const safeTable = escapeSqliteIdent(table);
+      const colRows = db.prepare(`PRAGMA table_info("${safeTable}")`).all();
 
       if (colRows.length === 0) {
         db.close();
         return { text: `Table \`${table}\` not found in SQLite.` };
       }
 
-      const fks = db.prepare(`PRAGMA foreign_key_list("${table}")`).all();
-      const idxs = db.prepare(`PRAGMA index_list("${table}")`).all();
+      const fks = db.prepare(`PRAGMA foreign_key_list("${safeTable}")`).all();
+      const idxs = db.prepare(`PRAGMA index_list("${safeTable}")`).all();
       db.close();
 
       const cols = colRows.map(r => ({
@@ -266,6 +285,12 @@ async function handleQuery(args) {
     return { error: 'Security restriction: Multiple SQL statements are not permitted.' };
   }
 
+  // Disallow administrative, file I/O, sleep, and dblink functions
+  const dangerousPatterns = /\b(pg_sleep|pg_read_file|pg_read_binary_file|pg_write_file|pg_ls_dir|dblink|dblink_exec|lo_import|lo_export|query_to_xml)\b/i;
+  if (dangerousPatterns.test(query)) {
+    return { error: 'Security restriction: Calling administrative, file I/O, network, or sleep functions is not permitted.' };
+  }
+
   const limit = Math.min(parseInt(args.limit || '25', 10), 100);
   const target = resolveConnection(args.connection);
   if (!target) return { error: 'No database connection or file found' };
@@ -279,6 +304,7 @@ async function handleQuery(args) {
     const client = new PgClient({ connectionString: target });
     try {
       await client.connect();
+      await client.query("SET statement_timeout = '5s'");
       // Read-only transaction enforcement
       await client.query('BEGIN READ ONLY');
       const res = await client.query(query);
