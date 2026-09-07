@@ -3,7 +3,7 @@
 # fzf keybindings, eza/bat/zoxide, lazygit + delta. Runs once as root via
 # cloud-init; every step is tolerant so a single missing tool never fails the
 # box, and ~/.zshrc guards each tool with `command -v`.
-set -uo pipefail
+set -euo pipefail
 trap 'touch /etc/devbox/.failed 2>/dev/null || true' ERR
 export DEBIAN_FRONTEND=noninteractive
 
@@ -27,9 +27,11 @@ arch=$(dpkg --print-architecture) # amd64 | arm64
 if ! command -v yq >/dev/null 2>&1; then
   log "installing yq"
   case "$arch" in amd64) ya=amd64 ;; arm64) ya=arm64 ;; *) ya= ;; esac
-  # mikefarah/yq — single static binary; apt ships a different, jq-wrapper yq
-  [ -n "$ya" ] && curl -fsSL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${ya}" \
-    -o /usr/local/bin/yq && chmod +x /usr/local/bin/yq || true
+  YQ_VERSION="${YQ_VERSION:-v4.44.3}"
+  if [ -n "$ya" ]; then
+    curl -fsSL "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${ya}" \
+      -o /usr/local/bin/yq && chmod +x /usr/local/bin/yq || log "yq install failed (skipping)"
+  fi
 fi
 
 if ! command -v starship >/dev/null 2>&1; then
@@ -45,13 +47,10 @@ fi
 if ! command -v lazygit >/dev/null 2>&1; then
   log "installing lazygit"
   case "$arch" in amd64) la=x86_64 ;; arm64) la=arm64 ;; *) la= ;; esac
-  ver=$(curl -sIL https://github.com/jesseduffield/lazygit/releases/latest | grep -i '^location:' | tail -n 1 | sed -E 's/.*\/v?([0-9.]+).*/\1/' | tr -d '\r\n')
-  if [ -z "$ver" ]; then
-    ver=$(curl -fsSL https://api.github.com/repos/jesseduffield/lazygit/releases/latest 2>/dev/null | jq -r .tag_name 2>/dev/null | sed 's/^v//')
-  fi
-  if [ -n "$la" ] && [ -n "$ver" ] && [ "$ver" != "null" ]; then
-    curl -fsSL "https://github.com/jesseduffield/lazygit/releases/download/v${ver}/lazygit_${ver}_Linux_${la}.tar.gz" \
-      | tar xz -C /usr/local/bin lazygit || true
+  LAZYGIT_VERSION="${LAZYGIT_VERSION:-0.44.1}"
+  if [ -n "$la" ]; then
+    curl -fsSL "https://github.com/jesseduffield/lazygit/releases/download/v${LAZYGIT_VERSION}/lazygit_${LAZYGIT_VERSION}_Linux_${la}.tar.gz" \
+      | tar xz -C /usr/local/bin lazygit || log "lazygit install failed (skipping)"
   fi
 fi
 

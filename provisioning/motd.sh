@@ -8,7 +8,14 @@ DEV_BIN="/home/${DEVBOX_USER:-dev}/.npm-global/bin"
 LOCAL_BIN="/home/${DEVBOX_USER:-dev}/.local/bin"
 have() { command -v "$1" >/dev/null 2>&1 || [ -x "$DEV_BIN/$1" ] || [ -x "$LOCAL_BIN/$1" ]; }
 
-if [ -e /etc/devbox/.provisioned ]; then
+if [ -e /etc/devbox/.failed ]; then
+  docker_status=$(have docker && echo "ready" || echo "failed")
+  codex_status=$(have codex && echo "installed" || echo "failed")
+  claude_status=$(have claude && echo "installed" || echo "failed")
+  agy_status=$(have agy && echo "installed" || echo "failed")
+  browser_status=$(have playwright && echo "installed" || echo "failed")
+  ts_status=$(have tailscale && echo "installed" || echo "failed")
+elif [ -e /etc/devbox/.provisioned ]; then
   docker_status="not installed"
   if have docker; then
     if docker info >/dev/null 2>&1 || systemctl is-active -q docker 2>/dev/null; then
@@ -26,13 +33,6 @@ if [ -e /etc/devbox/.provisioned ]; then
     ts_ip=$(tailscale ip -4 2>/dev/null || true)
     [ -n "$ts_ip" ] && ts_status="connected ($ts_ip)" || ts_status="installed (offline)"
   fi
-elif [ -e /etc/devbox/.failed ]; then
-  docker_status=$(have docker && echo "ready" || echo "failed")
-  codex_status=$(have codex && echo "installed" || echo "failed")
-  claude_status=$(have claude && echo "installed" || echo "failed")
-  agy_status=$(have agy && echo "installed" || echo "failed")
-  browser_status=$(have playwright && echo "installed" || echo "failed")
-  ts_status=$(have tailscale && echo "installed" || echo "failed")
 else
   docker_status="provisioning..."
   codex_status="provisioning..."

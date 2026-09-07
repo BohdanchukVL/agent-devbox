@@ -62,7 +62,9 @@ git)
     dir="${2:-$HOME}"
     b=$(cd "$dir" 2>/dev/null && git symbolic-ref --short HEAD 2>/dev/null) || exit 0
     [ -n "$b" ] || exit 0
-    [ -n "$(cd "$dir" && git status --porcelain 2>/dev/null)" ] && b="$b*"
+    if (cd "$dir" 2>/dev/null && { ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null || [ -n "$(git ls-files --others --exclude-standard 2>/dev/null | head -n 1)" ]; }); then
+        b="$b*"
+    fi
     printf '%s' "$b"
     ;;
 ai)
@@ -72,6 +74,18 @@ ai)
     pane_cmd="${3:-}"
     pane_pid="${4:-}"
     win_id="${5:-}"
+
+    # Cache AI segment output per pane for 5s to avoid heavy repetitive checks
+    cache_file="/tmp/.devbox-ai-cache-${pane_pid:-default}"
+    now=$(date +%s 2>/dev/null || echo 0)
+    if [ -f "$cache_file" ]; then
+        cache_mtime=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null || echo 0)
+        if [ $(( now - cache_mtime )) -lt 5 ]; then
+            cat "$cache_file" 2>/dev/null
+            exit 0
+        fi
+    fi
+    print_ai() { printf ' %s' "$1" | tee "$cache_file" 2>/dev/null; }
 
     git_root=$(cd "$dir" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)
     [ -n "$git_root" ] && proj_dir="$git_root" || proj_dir="$dir"
@@ -213,7 +227,7 @@ EOF
         [ -n "$bar_str" ] && out="$out $bar_str"
         [ -n "$cl_tok_str" ] && out="$out #[fg=colour246]$cl_tok_str#[default]"
         [ -n "$cl_cost_str" ] && out="$out #[fg=colour180]$cl_cost_str#[default]"
-        printf ' %s' "$out"
+        print_ai "$out"
         ;;
 
     codex)
@@ -331,7 +345,7 @@ EOF
         out="#[fg=colour75,bold]codex${cx_busy}#[default]"
         [ -n "$bar_str" ] && out="$out $bar_str"
         [ -n "$cx_tok_str" ] && out="$out #[fg=colour246]$cx_tok_str#[default]"
-        printf ' %s' "$out"
+        print_ai "$out"
         ;;
 
     agy)
@@ -394,7 +408,7 @@ EOF
         out="#[fg=colour141,bold]agy${agy_busy}#[default]"
         [ -n "$bar_str" ] && out="$out $bar_str"
         [ -n "$agy_tok_str" ] && out="$out #[fg=colour246]$agy_tok_str#[default]"
-        printf ' %s' "$out"
+        print_ai "$out"
         ;;
     esac
     ;;
@@ -402,5 +416,43 @@ load)
     # only surface load when the box is actually busy — idle zeros are noise
     read -r one _ </proc/loadavg 2>/dev/null || exit 0
     awk -v l="$one" 'BEGIN { exit !(l + 0 >= 1.0) }' && printf 'load %s' "$one"
+    ;;
+all)
+    dir="${2:-$PWD}"
+    pane_cmd="${3:-}"
+    pane_pid="${4:-}"
+    win_id="${5:-}"
+
+    # 1. cwd segment
+    cwd_dir="$dir"
+    case "$cwd_dir" in
+      "$HOME")   cwd_str='~' ;;
+      "$HOME"/*) cwd_str="~${cwd_dir#"$HOME"}" ;;
+      *)         cwd_str="$cwd_dir" ;;
+    esac
+    cwd_fmt=$(printf '%s' "$cwd_str" | awk -F/ 'NF<=3 { printf "%s", $0; next } { printf "…/%s/%s", $(NF-1), $NF }')
+
+    # 2. git segment
+    git_fmt=""
+    b=$(cd "$dir" 2>/dev/null && git symbolic-ref --short HEAD 2>/dev/null)
+    if [ -n "$b" ]; then
+        if (cd "$dir" 2>/dev/null && { ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null || [ -n "$(git ls-files --others --exclude-standard 2>/dev/null | head -n 1)" ]; }); then
+            b="$b*"
+        fi
+        git_fmt=" #[fg=colour108]$b"
+    fi
+
+    # 3. ai segment
+    ai_fmt=$("$0" ai "$dir" "$pane_cmd" "$pane_pid" "$win_id")
+
+    # 4. load segment
+    load_fmt=""
+    read -r one _ </proc/loadavg 2>/dev/null || one=""
+    if [ -n "$one" ]; then
+        load_val=$(awk -v l="$one" 'BEGIN { if (l + 0 >= 1.0) printf " #[fg=colour214]load %s", l }')
+        load_fmt="$load_val"
+    fi
+
+    printf "#[fg=colour180,bold]%s%s%s%s #[fg=colour241]│ #[fg=colour246]%%H:%%M " "$cwd_fmt" "$git_fmt" "$ai_fmt" "$load_fmt"
     ;;
 esac
