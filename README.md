@@ -13,6 +13,8 @@ Use this template → add secrets → run "Deploy to Hetzner" → ssh dev@<ip> �
 A fresh Ubuntu 24.04 server with:
 
 - **Agents**: Codex CLI, Claude Code, Google Antigravity CLI (`agy`) pre-installed and ready to auth (OpenCode optional)
+- **Pre-configured MCP Servers**: code-intel (ctags, ast-grep, ripgrep), hardened SQLite/PostgreSQL (`mcp/db`), Playwright browser (`playwright-mcp`), and memory (`mcp-server-memory`)
+- **Web Gateway (`devbox-web`)**: browser and mobile terminal over WebSockets with screenshot/file drag-and-drop, mobile touch controls, and token authentication (port 7681)
 - **Codex Sandbox**: bubblewrap (`bwrap`) pre-configured with unprivileged user namespaces for secure local execution
 - **Headless browser**: Chromium via Playwright, so agents can run E2E tests and take screenshots (optional, on by default)
 - **Dev shell**: zsh with autosuggestions, syntax highlighting, a starship prompt, fzf and zoxide, plus modern CLIs (eza, bat, fd, ripgrep, jq, yq, delta, lazygit, direnv, shellcheck, httpie) and neovim
@@ -20,7 +22,7 @@ A fresh Ubuntu 24.04 server with:
 - **Runtimes**: Node.js 22, npm, pnpm, Python 3, pipx
 - **Docker**: Engine + Compose plugin (optional)
 - **Workspace**: `/workspace` owned by the dev user (on Hetzner: a separate volume, so it can outlive the server type)
-- **Hardened SSH**: key-only auth, no root login, no passwords
+- **Hardened SSH & Firewall**: key-only auth, locked passwords, dynamic firewall closing port 22 when Tailscale is active
 
 ## Quick start (Hetzner — recommended first)
 
@@ -80,18 +82,18 @@ of creating duplicates, and destroy always knows what to delete.
 ```
 .github/workflows/   manual (workflow_dispatch) deploy/destroy per provider
 terraform/<provider> provider-specific infrastructure (server, firewall, SSH key)
-provisioning/        shared cloud-init + install scripts — identical machine on every cloud
-config/              reference for the on-machine /etc/devbox/devbox.env
+provisioning/        thin cloud-init bootstrap + installation scripts
+mcp/                 bundled MCP servers (code-intel, db)
+web/                 companion web gateway (browser/mobile terminal, file paste)
 cli/                 companion devbox CLI (Rust) — local clipboard/file bridge
-docs/                per-provider setup guides
+docs/                per-provider setup & security guides
 ```
 
-All providers feed the **same** `provisioning/cloud-init.yaml` through Terraform's
-`templatefile()`, so the machine you get is the same regardless of cloud. The
-cloud-init creates the user and installs the base toolchain (`install-base.sh`),
-the agents (`install-agents.sh`), the optional headless browser
-(`install-browser.sh`) and the zsh dev shell (`install-shell.sh`), then drops a
-status MOTD:
+All providers feed the **same** thin `provisioning/cloud-init.yaml` (<7 KB payload) through Terraform's
+`templatefile()`, which pulls the pinned repository payload and executes `bootstrap.sh`. The installer
+stages the base toolchain (`install-base.sh`), the agents & MCP servers (`install-agents.sh`),
+the optional headless browser (`install-browser.sh`), the companion web gateway (`web/`), and the zsh dev shell (`install-shell.sh`),
+then activates a live status MOTD:
 
 ```
 ┌──────────────────────────────────────────┐

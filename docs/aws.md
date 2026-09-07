@@ -77,10 +77,15 @@ Re-runs update the existing machine.
 > The devbox gets its own tiny VPC (`10.80.0.0/16`), so it works even in
 > accounts without a default VPC and tears down cleanly.
 >
-> The Terraform state is stored under a region-independent key. To **move**
-> the devbox to another region, destroy it first, then deploy to the new
-> region — deploying to a second region without destroying would try to
-> "move" the existing machine.
+> **IMDSv2 & EC2 Hardening**:
+> EC2 metadata strictly enforces IMDSv2 (`http_tokens = "required"`, hop limit `1`)
+> to prevent SSRF credential leaks. User data changes automatically recreate the instance
+> via `user_data_replace_on_change = true`.
+>
+> **Thin Bootstrap**:
+> Provisioning uses a compact bootstrap payload (~6.4 KB raw, well below the AWS EC2
+> 16,384-byte quota). Scripts, MCP servers, and web components are pulled dynamically
+> from the repository ref.
 
 ## Connect / Destroy
 
