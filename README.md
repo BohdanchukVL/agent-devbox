@@ -14,7 +14,7 @@ A fresh Ubuntu 24.04 server with:
 
 - **Agents**: Codex CLI, Claude Code, Google Antigravity CLI (`agy`) pre-installed and ready to auth (OpenCode optional)
 - **Pre-configured MCP Servers**: code-intel (ctags, ast-grep, ripgrep), hardened SQLite/PostgreSQL (`mcp/db`), Playwright browser (`playwright-mcp`), and memory (`mcp-server-memory`)
-- **Web Gateway (`devbox-web`)**: browser and mobile terminal over WebSockets with screenshot/file drag-and-drop, mobile touch controls, and token authentication (port 7681)
+- **Web Gateway (`devbox-web`)**: browser and mobile terminal over WebSockets with screenshot/file drag-and-drop, mobile touch controls, token authentication, and HTTPS access via `tailscale serve` or SSH port forward (port 7681)
 - **Codex Sandbox**: bubblewrap (`bwrap`) pre-configured with unprivileged user namespaces for secure local execution
 - **Headless browser**: Chromium via Playwright, so agents can run E2E tests and take screenshots (optional, on by default)
 - **Dev shell**: zsh with autosuggestions, syntax highlighting, a starship prompt, fzf and zoxide, plus modern CLIs (eza, bat, fd, ripgrep, jq, yq, delta, lazygit, direnv, shellcheck, httpie) and neovim
@@ -83,6 +83,7 @@ of creating duplicates, and destroy always knows what to delete.
 .github/workflows/   manual (workflow_dispatch) deploy/destroy per provider
 terraform/<provider> provider-specific infrastructure (server, firewall, SSH key)
 provisioning/        thin cloud-init bootstrap + installation scripts
+config/              sample devbox configuration (config/devbox.env.example)
 mcp/                 bundled MCP servers (code-intel, db)
 web/                 companion web gateway (browser/mobile terminal, file paste)
 cli/                 companion devbox CLI (Rust) — local clipboard/file bridge
@@ -118,6 +119,7 @@ then activates a live status MOTD:
 
 Provisioning logs on the machine: `/var/log/devbox-install.log`
 (provisioning is finished when `/etc/devbox/.provisioned` exists).
+Environment variables and customization hooks are documented in [`config/devbox.env.example`](config/devbox.env.example).
 
 ## The `devbox` CLI
 
