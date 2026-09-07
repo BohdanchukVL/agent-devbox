@@ -41,7 +41,8 @@ accordingly.
 The `devbox-web` companion service runs as an unprivileged user systemd service:
 - **Binding**: Binds to `HOST=127.0.0.1` on port `7681` by default. Accessible externally via `tailscale serve --bg 7681` (which provides HTTPS under your tailnet name) or an SSH local port forward (`ssh -L 7681:127.0.0.1:7681 dev@<ip>`).
 - **Authentication**: Fail-closed token-based authentication via `DEVBOX_WEB_TOKEN` stored in `~/.devbox/web.env` (permissions `0600`). If the token is unset or empty, the server refuses to start. Constant-time comparison (`crypto.timingSafeEqual`) is enforced for API and WebSocket token checks.
-- **CSWSH Protection**: Cross-Site WebSocket Hijacking protection by strictly validating the `Origin` header against the exact `Host` header or configured `DEVBOX_ALLOWED_ORIGIN`. Unrestricted wildcard domain suffixes are rejected.
+- **CSWSH Protection**: Cross-Site WebSocket Hijacking protection by strictly validating the `Origin` header against the exact `Host` header, `X-Forwarded-Host`, or configured `DEVBOX_ALLOWED_ORIGIN`. Unrestricted wildcard domain suffixes are rejected.
+- **DNS Rebinding & Token Primacy**: Origin-to-Host validation does not protect against DNS rebinding (where an attacker's domain resolves to `127.0.0.1`, matching Origin and Host). Therefore, secret token authentication (`DEVBOX_WEB_TOKEN`) is the primary, indispensable boundary protecting WebSockets and APIs; Origin checks serve as defense-in-depth against simple cross-origin requests from third-party websites.
 - **Command Injection Prevention**: Uses argument array execution (`spawnSync`/`execFileSync`) rather than shell string interpolation for `tmux` commands, combined with strict session name validation (`/^[a-zA-Z0-9_.-]+$/`).
 - **Subresource Integrity (SRI)**: CDN fallbacks for `@xterm/xterm` scripts include cryptographic SRI hashes.
 
