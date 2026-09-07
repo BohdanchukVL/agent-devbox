@@ -5,12 +5,13 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=%h/.devbox/web
+EnvironmentFile=-%h/.devbox/web.env
 ExecStart=/usr/bin/node server.js
 Restart=always
 RestartSec=3
 Environment=NODE_ENV=production
 Environment=PORT=7681
-Environment=HOST=0.0.0.0
+Environment=HOST=127.0.0.1
 
 [Install]
 WantedBy=default.target

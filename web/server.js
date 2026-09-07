@@ -2,7 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execSync, spawn } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { WebSocketServer } from 'ws';
 import pty from 'node-pty';
 import Busboy from 'busboy';
@@ -12,6 +12,7 @@ const __dirname = path.dirname(__filename);
 
 const PORT = parseInt(process.env.PORT || '7681', 10);
 const HOST = process.env.HOST || '127.0.0.1';
+const AUTH_TOKEN = process.env.DEVBOX_WEB_TOKEN || process.env.AUTH_TOKEN || '';
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const NODE_MODULES = path.join(__dirname, 'node_modules');
 
@@ -34,45 +35,88 @@ function getMimeType(filePath) {
   return types[ext] || 'application/octet-stream';
 }
 
+function sanitizeSessionName(name) {
+  if (typeof name !== 'string') return 'main-web';
+  const clean = name.trim();
+  if (/^[a-zA-Z0-9_-]{1,64}$/.test(clean)) {
+    return clean;
+  }
+  return 'main-web';
+}
+
 function ensureTmuxSession(sessionName) {
-  try {
-    execSync('tmux has-session -t main 2>/dev/null');
-  } catch {
+  sessionName = sanitizeSessionName(sessionName);
+  const check = spawnSync('tmux', ['has-session', '-t', 'main'], { stdio: 'ignore' });
+  if (check.status !== 0) {
     const rootDir = fs.existsSync('/workspace') ? '/workspace' : (process.env.HOME || '/home/dev');
-    execSync(`tmux new-session -d -s main -c "${rootDir}"`);
+    spawnSync('tmux', ['new-session', '-d', '-s', 'main', '-c', rootDir], { stdio: 'ignore' });
   }
 
   if (sessionName !== 'main') {
-    try {
-      execSync(`tmux has-session -t "${sessionName}" 2>/dev/null`);
-    } catch {
-      execSync(`tmux new-session -d -t main -s "${sessionName}"`);
+    const checkTarget = spawnSync('tmux', ['has-session', '-t', sessionName], { stdio: 'ignore' });
+    if (checkTarget.status !== 0) {
+      spawnSync('tmux', ['new-session', '-d', '-t', 'main', '-s', sessionName], { stdio: 'ignore' });
     }
   }
 }
 
 function getPaneCwd(sessionName) {
+  sessionName = sanitizeSessionName(sessionName);
   try {
-    const cwd = execSync(`tmux display-message -p -t "${sessionName}" '#{pane_current_path}' 2>/dev/null`, {
-      encoding: 'utf8'
+    const cwd = execFileSync('tmux', ['display-message', '-p', '-t', sessionName, '#{pane_current_path}'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
     }).trim();
     if (cwd && fs.existsSync(cwd)) return cwd;
   } catch {}
   return fs.existsSync('/workspace') ? '/workspace' : (process.env.HOME || '/home/dev');
 }
 
-const server = http.createServer((req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  const pathname = url.pathname;
+function isAllowedOrigin(origin, hostHeader) {
+  if (!origin) return true; // Direct non-browser requests
+  try {
+    const originUrl = new URL(origin);
+    const originHost = originUrl.host;
+    if (originHost === hostHeader) return true;
+    if (originUrl.hostname === 'localhost' || originUrl.hostname === '127.0.0.1') return true;
+    if (originUrl.hostname.endsWith('.ts.net')) return true; // Tailscale MagicDNS
+  } catch {}
+  return false;
+}
 
-  // CORS headers for Tailnet access
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+function checkAuth(req, url) {
+  if (!AUTH_TOKEN) return true; // Auth not required if no token set
+  const authHeader = req.headers['authorization'] || '';
+  if (authHeader === `Bearer ${AUTH_TOKEN}` || authHeader === AUTH_TOKEN) return true;
+  const tokenQuery = url.searchParams.get('token');
+  if (tokenQuery === AUTH_TOKEN) return true;
+  return false;
+}
+
+const server = http.createServer((req, res) => {
+  const hostHeader = req.headers.host || 'localhost';
+  const url = new URL(req.url, `http://${hostHeader}`);
+  const pathname = url.pathname;
+  const origin = req.headers.origin;
+
+  // Origin check & CORS: restrict to same-origin / allowed hosts
+  if (origin && isAllowedOrigin(origin, hostHeader)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  }
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
     res.end();
+    return;
+  }
+
+  // Token authentication check for API routes
+  if (pathname.startsWith('/api/') && !checkAuth(req, url)) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Unauthorized: invalid or missing auth token' }));
     return;
   }
 
@@ -122,7 +166,7 @@ const server = http.createServer((req, res) => {
 
           // Type the path into the active tmux pane
           try {
-            execSync(`tmux send-keys -t "${session}" -l "${relativePath} "`);
+            execFileSync('tmux', ['send-keys', '-t', session, '-l', `${relativePath} `]);
           } catch (e) {
             console.error(`[upload] failed to send-keys to ${session}:`, e.message);
           }
@@ -164,15 +208,15 @@ const server = http.createServer((req, res) => {
     req.on('end', () => {
       try {
         const data = JSON.parse(body || '{}');
-        const session = data.session || 'main-web';
+        const session = sanitizeSessionName(data.session || 'main-web');
         ensureTmuxSession(session);
 
         if (data.action === 'zoom') {
-          execSync(`tmux resize-pane -Z -t "${session}" 2>/dev/null || true`);
+          spawnSync('tmux', ['resize-pane', '-Z', '-t', session]);
         } else if (data.action === 'next-window') {
-          execSync(`tmux next-window -t "${session}" 2>/dev/null || true`);
+          spawnSync('tmux', ['next-window', '-t', session]);
         } else if (data.action === 'prev-window') {
-          execSync(`tmux previous-window -t "${session}" 2>/dev/null || true`);
+          spawnSync('tmux', ['previous-window', '-t', session]);
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
@@ -186,7 +230,7 @@ const server = http.createServer((req, res) => {
 
   // 3. Status API
   if (req.method === 'GET' && pathname === '/api/status') {
-    const session = url.searchParams.get('session') || 'main-web';
+    const session = sanitizeSessionName(url.searchParams.get('session') || 'main-web');
     let cwd = '';
     try {
       cwd = getPaneCwd(session);
@@ -201,7 +245,10 @@ const server = http.createServer((req, res) => {
   if (pathname === '/' || pathname === '/index.html') {
     targetPath = path.join(PUBLIC_DIR, 'index.html');
   } else if (pathname.startsWith('/vendor/xterm/')) {
-    targetPath = path.join(NODE_MODULES, 'xterm', pathname.replace('/vendor/xterm/', ''));
+    const rel = pathname.replace('/vendor/xterm/', '');
+    const modernPath = path.join(NODE_MODULES, '@xterm', 'xterm', rel);
+    const legacyPath = path.join(NODE_MODULES, 'xterm', rel);
+    targetPath = fs.existsSync(modernPath) ? modernPath : legacyPath;
   } else if (pathname.startsWith('/vendor/addon-fit/')) {
     targetPath = path.join(NODE_MODULES, '@xterm', 'addon-fit', pathname.replace('/vendor/addon-fit/', ''));
   } else if (pathname.startsWith('/vendor/addon-webgl/')) {
@@ -222,9 +269,44 @@ const server = http.createServer((req, res) => {
 // WebSocket Server for Terminal stream
 const wss = new WebSocketServer({ server });
 
+// Heartbeat ping interval (30s)
+const pingInterval = setInterval(() => {
+  wss.clients.forEach(ws => {
+    if (ws.isAlive === false) {
+      return ws.terminate();
+    }
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, 30000);
+
+wss.on('close', () => {
+  clearInterval(pingInterval);
+});
+
 wss.on('connection', (ws, req) => {
-  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  const clientType = url.searchParams.get('client') || 'desktop';
+  const hostHeader = req.headers.host || 'localhost';
+  const url = new URL(req.url, `http://${hostHeader}`);
+  const origin = req.headers.origin;
+
+  // Cross-Site WebSocket Hijacking (CSWSH) protection
+  if (origin && !isAllowedOrigin(origin, hostHeader)) {
+    console.warn(`[ws] rejected connection: unauthorized origin "${origin}" for host "${hostHeader}"`);
+    ws.close(1008, 'Origin not allowed');
+    return;
+  }
+
+  // Token authentication check
+  if (!checkAuth(req, url)) {
+    console.warn('[ws] rejected connection: unauthorized token');
+    ws.close(1008, 'Unauthorized');
+    return;
+  }
+
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
+
+  const clientType = url.searchParams.get('client') === 'mobile' ? 'mobile' : 'desktop';
   const cols = parseInt(url.searchParams.get('cols') || '120', 10);
   const rows = parseInt(url.searchParams.get('rows') || '30', 10);
 

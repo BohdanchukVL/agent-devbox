@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>Agent Devbox Web</title>
-  <link rel="stylesheet" href="/vendor/xterm/css/xterm.css" onerror="this.href='https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css'">
+  <link rel="stylesheet" href="/vendor/xterm/css/xterm.css" onerror="loadCdnCss(this)">
   <style>
     :root {
       --bg: #141414;
@@ -255,19 +255,36 @@
 
   <div id="toast"></div>
 
-  <!-- Load XTerm Scripts with CDN fallback -->
+  <!-- Load XTerm Scripts with CDN fallback and Subresource Integrity (SRI) -->
   <script src="/vendor/xterm/lib/xterm.js" onerror="loadCdnXterm()"></script>
   <script src="/vendor/addon-fit/lib/addon-fit.js" onerror="loadCdnFit()"></script>
+  <script src="/vendor/addon-webgl/lib/addon-webgl.js" onerror="loadCdnWebgl()"></script>
 
   <script>
+    function loadCdnCss(el) {
+      el.integrity = 'sha384-8Xk9wy/gzEDUKrXtrmCFa2bBuK3BpjpDuL/p0SeKQX19Khl/M+lHOgD/CyYf7efP';
+      el.crossOrigin = 'anonymous';
+      el.href = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css';
+    }
     function loadCdnXterm() {
       const s = document.createElement('script');
-      s.src = 'https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js';
+      s.src = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js';
+      s.integrity = 'sha384-M169f14mRZOXm3hD/v2Ti0ThIT/RnAQagXA9nlE15yHAtrW19gdePJh/HaTzUOe/';
+      s.crossOrigin = 'anonymous';
       document.head.appendChild(s);
     }
     function loadCdnFit() {
       const s = document.createElement('script');
       s.src = 'https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js';
+      s.integrity = 'sha384-iF+jqbuti4XlB64clWgFWYEscb+UnSRv3VgVikGYZu+otNFnSHr7y7NcKfBnGizn';
+      s.crossOrigin = 'anonymous';
+      document.head.appendChild(s);
+    }
+    function loadCdnWebgl() {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/@xterm/addon-webgl@0.18.0/lib/addon-webgl.js';
+      s.integrity = 'sha384-AkzdQDeATxpW8V7I2EPcwg17qAoLQMjEFHb//1QaAAIyIlbDAHGKno5+huH7RKxq';
+      s.crossOrigin = 'anonymous';
       document.head.appendChild(s);
     }
   </script>
@@ -276,6 +293,12 @@
     const isMobile = window.innerWidth <= 768 || ('ontouchstart' in window);
     const clientType = isMobile ? 'mobile' : 'desktop';
     const sessionName = clientType === 'mobile' ? 'main-mobile' : 'main-web';
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const authToken = urlParams.get('token') || sessionStorage.getItem('devbox_token') || '';
+    if (urlParams.get('token')) {
+      sessionStorage.setItem('devbox_token', urlParams.get('token'));
+    }
 
     document.getElementById('session-name').textContent = sessionName;
 
@@ -328,6 +351,17 @@
 
       fitAddon = new FitAddon.FitAddon();
       term.loadAddon(fitAddon);
+
+      if (typeof WebglAddon !== 'undefined') {
+        try {
+          const webgl = new WebglAddon.WebglAddon();
+          webgl.onContextLoss(() => webgl.dispose());
+          term.loadAddon(webgl);
+        } catch (e) {
+          console.warn('WebGL addon failed, using default renderer', e);
+        }
+      }
+
       term.open(termContainer);
       fitAddon.fit();
 
@@ -351,7 +385,8 @@
       statusDot.title = 'Connecting...';
 
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${proto}//${location.host}/ws?client=${clientType}&cols=${term.cols}&rows=${term.rows}`;
+      const tokenQuery = authToken ? `&token=${encodeURIComponent(authToken)}` : '';
+      const wsUrl = `${proto}//${location.host}/ws?client=${clientType}&cols=${term.cols}&rows=${term.rows}${tokenQuery}`;
 
       ws = new WebSocket(wsUrl);
 
@@ -391,8 +426,11 @@
       formData.append('file', file);
 
       try {
-        const res = await fetch(`/api/upload?session=${sessionName}`, {
+        const headers = {};
+        if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+        const res = await fetch(`/api/upload?session=${encodeURIComponent(sessionName)}`, {
           method: 'POST',
+          headers,
           body: formData
         });
         const json = await res.json();
@@ -462,9 +500,11 @@
     // 3. Header Actions
     async function triggerAction(action) {
       try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
         await fetch('/api/action', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
           body: JSON.stringify({ session: sessionName, action })
         });
       } catch {}
