@@ -9,6 +9,9 @@ on:
 
 concurrency: hetzner-devbox
 
+permissions:
+  contents: read
+
 jobs:
   destroy:
     runs-on: ubuntu-latest

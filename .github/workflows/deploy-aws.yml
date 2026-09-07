@@ -149,7 +149,9 @@ jobs:
             -var="install_claude=${{ inputs.install_claude }}" \
             -var="install_opencode=${{ inputs.install_opencode }}" \
             -var="install_antigravity=${{ inputs.install_antigravity }}" \
-            -var="install_browser=${{ inputs.install_browser }}"
+            -var="install_browser=${{ inputs.install_browser }}" \
+            -var="git_repo=${{ github.repository }}" \
+            -var="git_ref=${{ github.sha }}"
 
       - name: Deployment summary
         working-directory: terraform/aws

@@ -1,0 +1,99 @@
+name: Lint and Validate
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+permissions:
+  contents: read
+
+jobs:
+  terraform:
+    name: Terraform Format & Validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Check Terraform formatting
+        run: terraform fmt -check -recursive terraform/
+
+      - name: Validate Hetzner
+        run: |
+          terraform -chdir=terraform/hetzner init -backend=false
+          terraform -chdir=terraform/hetzner validate
+
+      - name: Validate AWS
+        run: |
+          terraform -chdir=terraform/aws init -backend=false
+          terraform -chdir=terraform/aws validate
+
+      - name: Validate Azure
+        run: |
+          terraform -chdir=terraform/azure init -backend=false
+          terraform -chdir=terraform/azure validate
+
+  scripts:
+    name: Shell Scripts Syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate bash scripts syntax
+        run: |
+          for f in provisioning/*.sh; do
+            echo "Checking $f..."
+            bash -n "$f"
+          done
+
+  node:
+    name: Node.js Syntax & Lockfile Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Check JavaScript syntax
+        run: |
+          node --check web/server.js
+          node --check mcp/db/index.js
+          node --check mcp/code-intel/index.js
+
+      - name: Check web npm audit
+        run: |
+          cd web && npm audit --audit-level=high
+
+      - name: Check mcp/db npm audit
+        run: |
+          cd mcp/db && npm audit --audit-level=high
+
+      - name: Check mcp/code-intel npm audit
+        run: |
+          cd mcp/code-intel && npm audit --audit-level=high
+
+  rust-cli:
+    name: Rust CLI Clippy & Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cargo clippy
+        working-directory: cli
+        run: cargo clippy -- -D warnings
+
+      - name: Cargo test
+        working-directory: cli
+        run: cargo test
