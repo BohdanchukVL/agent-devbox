@@ -1,0 +1,13 @@
+{
+  "name": "devbox-code-intel",
+  "version": "0.1.0",
+  "description": "Token-efficient code intelligence MCP server for agent-devbox (Rust, TS/JS, Go, Python)",
+  "type": "module",
+  "main": "index.js",
+  "bin": {
+    "devbox-code-intel": "./index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0"
+  }
+}

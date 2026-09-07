@@ -22,7 +22,8 @@ apt-get install -y --no-install-recommends \
   git curl wget jq unzip zip ripgrep fzf tmux htop bubblewrap \
   rsync socat dnsutils strace ncdu \
   build-essential ca-certificates gnupg \
-  python3 python3-venv python3-pip pipx
+  python3 python3-venv python3-pip pipx \
+  universal-ctags golang-go
 
 log "configuring unprivileged user namespaces for bubblewrap sandbox"
 if [ -d /etc/apparmor.d ] && command -v apparmor_parser >/dev/null 2>&1; then
