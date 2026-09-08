@@ -219,8 +219,16 @@ EOF
                                 *) [ "$cur_tok" -gt 200000 ] 2>/dev/null && max_tok=1000000 ;;
                             esac
                             cl_pct=$(( (cur_tok * 100) / max_tok ))
-                            cl_tok_str="ctx:$(fmt_tokens "$cur_tok")/$(fmt_tokens "$max_tok")"
+                            cl_tok_str="$(fmt_tokens "$cur_tok")/$(fmt_tokens "$max_tok")"
                         fi
+                    fi
+                fi
+
+                # Check for live 5h session rate limits piped by Claude Code statusLine hook
+                if [ -f "/tmp/.claude-status.json" ]; then
+                    cl_rl=$(jq -r '(.rate_limits.five_hour.used_percentage // .rate_limits.seven_day.used_percentage // empty)' /tmp/.claude-status.json 2>/dev/null)
+                    if [ -n "$cl_rl" ]; then
+                        cl_pct=$(printf "%.0f" "$cl_rl" 2>/dev/null || echo 0)
                     fi
                 fi
 
@@ -243,7 +251,7 @@ EOF
             fi
         fi
 
-        [ -z "$cl_pct" ] && cl_pct=0 && cl_tok_str="ctx:0/200k"
+        [ -z "$cl_pct" ] && cl_pct=0 && cl_tok_str="0/200k"
 
         bar_str=$(render_bar "$cl_pct")
         out="#[fg=colour209,bold]claude${cl_busy}#[default]"
