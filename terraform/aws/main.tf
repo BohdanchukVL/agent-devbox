@@ -129,7 +129,11 @@ resource "aws_key_pair" "this" {
 }
 
 resource "terraform_data" "payload" {
-  input = "${var.git_ref}:${var.install_docker}:${var.install_codex}:${var.install_claude}:${var.install_opencode}:${var.install_antigravity}:${var.install_browser}:${var.username}"
+  input = join(":", [
+    var.git_ref, var.install_docker, var.install_codex, var.install_claude,
+    var.install_opencode, var.install_antigravity, var.install_browser, var.username,
+    sha256(var.ssh_public_key), sha256(var.tailscale_authkey), sha256(var.web_token),
+  ])
 }
 
 resource "aws_instance" "this" {
