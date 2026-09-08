@@ -219,19 +219,31 @@ EOF
                                 *) [ "$cur_tok" -gt 200000 ] 2>/dev/null && max_tok=1000000 ;;
                             esac
                             cl_pct=$(( (cur_tok * 100) / max_tok ))
-                            cl_tok_str="$(fmt_tokens "$cur_tok")/$(fmt_tokens "$max_tok")"
+                            cl_tok_str="ctx:$(fmt_tokens "$cur_tok")/$(fmt_tokens "$max_tok")"
                         fi
                     fi
                 fi
 
-                if [ -n "$cl_cost" ] && [ "$cl_cost" != "0" ] && [ "$cl_cost" != "-" ]; then
+                # Check if account is on a flat subscription (Max/Pro) vs pay-as-you-go API
+                is_subscription=false
+                for cred in "$HOME/.claude/.credentials.json" "$HOME/.claude-cc/.credentials.json"; do
+                    if [ -f "$cred" ]; then
+                        sub_t=$(jq -r '.claudeAiOauth.subscriptionType // empty' "$cred" 2>/dev/null)
+                        case "$sub_t" in
+                            max*|pro*|team*|enterprise*) is_subscription=true; break ;;
+                        esac
+                    fi
+                done
+
+                # Only show hypothetical dollar cost for pay-as-you-go API users, not subscriptions
+                if [ "$is_subscription" = false ] && [ -n "$cl_cost" ] && [ "$cl_cost" != "0" ] && [ "$cl_cost" != "-" ]; then
                     cost_fmt=$(awk -v c="$cl_cost" 'BEGIN { printf "%.2f", c }' 2>/dev/null)
                     [ -n "$cost_fmt" ] && cl_cost_str="\$${cost_fmt}"
                 fi
             fi
         fi
 
-        [ -z "$cl_pct" ] && cl_pct=0 && cl_tok_str="0/200k"
+        [ -z "$cl_pct" ] && cl_pct=0 && cl_tok_str="ctx:0/200k"
 
         bar_str=$(render_bar "$cl_pct")
         out="#[fg=colour209,bold]claude${cl_busy}#[default]"
