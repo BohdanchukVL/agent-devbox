@@ -101,6 +101,21 @@ elif [ -f "/opt/devbox/provisioning/CLAUDE.md" ]; then
   install -m 0644 -o "$U" -g "$U" /opt/devbox/provisioning/CLAUDE.md "$H/.gemini/config/AGENTS.md"
 fi
 
+# Configure Claude Code statusLine hook to export live rate limits to /tmp/.claude-status.json
+if [ -f "$H/.claude/settings.json" ]; then
+  sudo -u "$U" jq '.statusLine = {"type": "command", "command": "jq -c . > /tmp/.claude-status.json"}' "$H/.claude/settings.json" > "$H/.claude/settings.json.tmp" && mv "$H/.claude/settings.json.tmp" "$H/.claude/settings.json"
+else
+  cat > "$H/.claude/settings.json" <<EOF
+{
+  "statusLine": {
+    "type": "command",
+    "command": "jq -c . > /tmp/.claude-status.json"
+  }
+}
+EOF
+  chown "$U:$U" "$H/.claude/settings.json"
+fi
+
 # Pre-configure MCP for Antigravity
 cat > "$H/.gemini/config/mcp_config.json" <<EOF
 {
