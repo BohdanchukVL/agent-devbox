@@ -24,21 +24,21 @@ write_files:
   - path: /etc/devbox/devbox.env
     permissions: "0600"
     content: |
-      DEVBOX_USER=${username}
-      INSTALL_DOCKER=${install_docker}
-      INSTALL_CODEX=${install_codex}
-      INSTALL_CLAUDE=${install_claude}
-      INSTALL_OPENCODE=${install_opencode}
-      INSTALL_ANTIGRAVITY=${install_antigravity}
-      INSTALL_BROWSER=${install_browser}
-      WORKSPACE_DEVICE=${workspace_device}
-      TAILSCALE_AUTHKEY=${tailscale_authkey}
-      DEVBOX_WEB_TOKEN=${web_token}
-      PROVISIONING_REPO=${git_repo}
-      PROVISIONING_REF=${git_ref}
-      PROVISIONING_TOKEN=${git_token}
-      PROVISIONING_SHA256=${git_sha256}
-      PROVISIONING_TARBALL_URL=${tarball_url}
+      DEVBOX_USER="${username}"
+      INSTALL_DOCKER="${install_docker}"
+      INSTALL_CODEX="${install_codex}"
+      INSTALL_CLAUDE="${install_claude}"
+      INSTALL_OPENCODE="${install_opencode}"
+      INSTALL_ANTIGRAVITY="${install_antigravity}"
+      INSTALL_BROWSER="${install_browser}"
+      WORKSPACE_DEVICE="${workspace_device}"
+      TAILSCALE_AUTHKEY="${tailscale_authkey}"
+      DEVBOX_WEB_TOKEN="${web_token}"
+      PROVISIONING_REPO="${git_repo}"
+      PROVISIONING_REF="${git_ref}"
+      PROVISIONING_TOKEN="${git_token}"
+      PROVISIONING_SHA256="${git_sha256}"
+      PROVISIONING_TARBALL_URL="${tarball_url}"
   - path: /opt/devbox/bootstrap.sh
     permissions: "0755"
     content: |
