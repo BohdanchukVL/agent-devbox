@@ -98,4 +98,4 @@ jobs:
 
       - name: Run mcp/db tests
         run: |
-          cd mcp/db && npm test
+          cd mcp/db && npm ci && npm test
