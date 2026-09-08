@@ -175,7 +175,7 @@ if [ -d "/opt/devbox/web" ]; then
     # If Tailscale is running, expose port 7681 securely with MagicDNS HTTPS inside Tailnet
     if command -v tailscale >/dev/null 2>&1 && tailscale ip -4 >/dev/null 2>&1; then
       log "configuring tailscale serve for devbox-web (port 7681)..."
-      tailscale serve --bg 7681 2>/dev/null || true
+      timeout 5 tailscale serve --bg 7681 2>/dev/null || true
     fi
   fi
 fi
