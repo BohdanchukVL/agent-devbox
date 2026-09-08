@@ -124,6 +124,9 @@ fi
 log "Executing install-shell.sh..."
 /opt/devbox/install-shell.sh
 
+# Ensure dev user owns all files in home directory
+chown -R "$DEVBOX_USER:$DEVBOX_USER" "/home/$DEVBOX_USER" 2>/dev/null || true
+
 rm -f /etc/devbox/.failed
 touch /etc/devbox/.provisioned
 log "Agent devbox provisioning finished successfully."

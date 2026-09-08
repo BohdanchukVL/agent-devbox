@@ -131,7 +131,7 @@ cat > "$H/.gemini/config/mcp_config.json" <<EOF
   }
 }
 EOF
-chown "$U:$U" "$H/.gemini/config/mcp_config.json"
+chown -R "$U:$U" "$H/.gemini"
 
 # Setup devbox-web companion gateway
 if [ -d "/opt/devbox/web" ]; then
