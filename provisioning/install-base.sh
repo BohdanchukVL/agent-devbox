@@ -17,6 +17,15 @@ if ! grep -q "universe" /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/n
   add-apt-repository -y universe || true
 fi
 
+if [ ! -f /swapfile ] && [ "$(swapon --show --noheadings 2>/dev/null | wc -l)" -eq 0 ]; then
+  log "configuring 2GB swap file for low-memory safety"
+  fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+  echo '/swapfile none swap sw 0 0' >> /etc/fstab
+fi
+
 log "installing base packages"
 apt-get update -y
 apt-get install -y --no-install-recommends \
