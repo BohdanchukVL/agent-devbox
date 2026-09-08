@@ -343,10 +343,24 @@ wss.on('connection', (ws, req) => {
   const clientType = url.searchParams.get('client') === 'mobile' ? 'mobile' : 'desktop';
   const cols = parseInt(url.searchParams.get('cols') || '120', 10);
   const rows = parseInt(url.searchParams.get('rows') || '30', 10);
+  const customSession = url.searchParams.get('session');
 
-  // Grouped session topology: mobile vs desktop
-  const sessionName = clientType === 'mobile' ? 'main-mobile' : 'main-web';
-  ensureTmuxSession(sessionName);
+  // Client session topology:
+  // If a specific custom session is explicitly requested, honor it.
+  // Otherwise, create a unique linked session per client connection joined to the 'main' window group.
+  // This gives each tab/device independent terminal dimensions, scrollback, and cursor without collision.
+  let sessionName;
+  let isEphemeral = false;
+
+  if (customSession && customSession !== 'main' && customSession !== 'main-web' && customSession !== 'main-mobile') {
+    sessionName = sanitizeSessionName(customSession);
+    ensureTmuxSession(sessionName);
+  } else {
+    const clientId = crypto.randomBytes(4).toString('hex');
+    sessionName = sanitizeSessionName(`web-${clientType}-${clientId}`);
+    ensureTmuxSession(sessionName);
+    isEphemeral = true;
+  }
 
   console.log(`[ws] client connected (${clientType}) -> session "${sessionName}" [${cols}x${rows}]`);
 
@@ -387,7 +401,13 @@ wss.on('connection', (ws, req) => {
 
   ws.on('close', () => {
     console.log(`[ws] client disconnected from session "${sessionName}"`);
-    term.kill();
+    try {
+      term.kill();
+    } catch {}
+    if (isEphemeral) {
+      // Destroy temporary linked session, preserving 'main' and all background processes
+      spawnSync('tmux', ['kill-session', '-t', sessionName], { stdio: 'ignore' });
+    }
   });
 
   term.onExit(() => {

@@ -9,34 +9,65 @@ import sqlite from 'node:sqlite';
 import pg from 'pg';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const { Client: PgClient } = pg;
 
+// Context safety limits (configurable via environment)
+export const MAX_OUTPUT_BYTES = parseInt(process.env.DEVBOX_DB_MAX_OUTPUT_BYTES || '', 10) || 64 * 1024; // 64 KB
+export const MAX_CELL_BYTES = parseInt(process.env.DEVBOX_DB_MAX_CELL_BYTES || '', 10) || 1024;         // 1 KB
+
 // Helper: Escape double quotes in SQLite identifiers
-function escapeSqliteIdent(identifier) {
+export function escapeSqliteIdent(identifier) {
   return String(identifier).replace(/"/g, '""');
 }
 
-// Helper: Discover active database if none provided
-function resolveConnection(inputTarget) {
+export function isPostgres(target) {
+  return Boolean(target && (target.startsWith('postgres://') || target.startsWith('postgresql://')));
+}
+
+export function isLocalPostgresUrl(target) {
+  try {
+    const u = new URL(target);
+    const h = (u.hostname || '').toLowerCase();
+    return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]' || h.endsWith('.local');
+  } catch {
+    return false;
+  }
+}
+
+// Helper: Discover active database if none provided.
+// Inverted default for security: Remote databases (PostgreSQL) are NEVER auto-discovered
+// from .env or process.env unless explicitly allowed via DEVBOX_DB_ALLOW_REMOTE=true.
+export function resolveConnection(inputTarget) {
   if (inputTarget && typeof inputTarget === 'string' && inputTarget.trim()) {
     const target = inputTarget.trim();
     if (isPostgres(target)) {
       try {
         const u = new URL(target);
         if (u.protocol !== 'postgres:' && u.protocol !== 'postgresql:') {
-          return null;
+          return { target: null, error: 'Invalid database URL scheme. Supported: postgres:, postgresql:' };
         }
       } catch {
-        return null;
+        return { target: null, error: 'Invalid PostgreSQL connection URL' };
       }
     }
-    return target;
+    return { target };
   }
 
   // 1. Environment variable (unless disabled via DEVBOX_DB_DISABLE_ENV)
   if (process.env.DEVBOX_DB_DISABLE_ENV !== 'true' && process.env.DATABASE_URL) {
-    return process.env.DATABASE_URL;
+    const envUrl = process.env.DATABASE_URL.trim();
+    if (isPostgres(envUrl)) {
+      if (process.env.DEVBOX_DB_ALLOW_REMOTE === 'true' || isLocalPostgresUrl(envUrl)) {
+        return { target: envUrl };
+      }
+      return {
+        target: null,
+        error: 'Remote database in DATABASE_URL detected, but remote auto-discovery is disabled for security. Pass connection explicitly or set DEVBOX_DB_ALLOW_REMOTE=true.'
+      };
+    }
+    return { target: envUrl };
   }
 
   // 2. Check .env in cwd (unless disabled via DEVBOX_DB_DISABLE_ENV)
@@ -46,7 +77,19 @@ function resolveConnection(inputTarget) {
       try {
         const content = fs.readFileSync(envPath, 'utf8');
         const match = content.match(/^DATABASE_URL\s*=\s*["']?([^"'\r\n]+)["']?/m);
-        if (match && match[1]) return match[1].trim();
+        if (match && match[1]) {
+          const dotUrl = match[1].trim();
+          if (isPostgres(dotUrl)) {
+            if (process.env.DEVBOX_DB_ALLOW_REMOTE === 'true' || isLocalPostgresUrl(dotUrl)) {
+              return { target: dotUrl };
+            }
+            return {
+              target: null,
+              error: 'Remote database in .env detected, but remote auto-discovery is disabled for security. Pass connection explicitly or set DEVBOX_DB_ALLOW_REMOTE=true.'
+            };
+          }
+          return { target: dotUrl };
+        }
       } catch {}
     }
   }
@@ -61,48 +104,62 @@ function resolveConnection(inputTarget) {
 
   for (const c of candidates) {
     const full = path.resolve(process.cwd(), c);
-    if (fs.existsSync(full)) return full;
+    if (fs.existsSync(full)) return { target: full };
   }
 
   // General glob for any .db / .sqlite in current directory (non-recursive)
   try {
     const files = fs.readdirSync(process.cwd());
     const dbFile = files.find(f => f.endsWith('.sqlite') || f.endsWith('.sqlite3') || (f.endsWith('.db') && !f.includes('summary')));
-    if (dbFile) return path.resolve(process.cwd(), dbFile);
+    if (dbFile) return { target: path.resolve(process.cwd(), dbFile) };
   } catch {}
 
-  return null;
+  return { target: null, error: 'No database specified and none detected in current workspace (provide a path to a .db file or an explicit postgres:// connection URL).' };
 }
 
-function isPostgres(target) {
-  return target && (target.startsWith('postgres://') || target.startsWith('postgresql://'));
+export function truncateCell(val, maxCellBytes = MAX_CELL_BYTES) {
+  if (val === null || val === undefined) return '`NULL`';
+  let str = typeof val === 'object' ? JSON.stringify(val) : String(val);
+  const byteLen = Buffer.byteLength(str, 'utf8');
+  if (byteLen > maxCellBytes) {
+    str = str.slice(0, maxCellBytes) + `… [truncated ${byteLen - maxCellBytes} bytes]`;
+  }
+  return str.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
 }
 
-function formatMarkdownTable(headers, rows) {
+export function formatMarkdownTable(headers, rows, maxOutputBytes = MAX_OUTPUT_BYTES, maxCellBytes = MAX_CELL_BYTES) {
   if (!rows || rows.length === 0) return '_No rows returned._';
 
   const cols = headers.map(h => String(h));
   let md = '| ' + cols.join(' | ') + ' |\n';
   md += '| ' + cols.map(() => '---').join(' | ') + ' |\n';
 
-  for (const r of rows) {
-    const vals = cols.map(c => {
-      const val = r[c];
-      if (val === null || val === undefined) return '`NULL`';
-      if (typeof val === 'object') return JSON.stringify(val);
-      return String(val).replace(/\|/g, '\\|').replace(/\n/g, ' ');
-    });
-    md += '| ' + vals.join(' | ') + ' |\n';
+  let totalBytes = Buffer.byteLength(md, 'utf8');
+  let displayedRows = 0;
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const vals = cols.map(c => truncateCell(r[c], maxCellBytes));
+    const rowLine = '| ' + vals.join(' | ') + ' |\n';
+    const rowBytes = Buffer.byteLength(rowLine, 'utf8');
+
+    if (totalBytes + rowBytes > maxOutputBytes) {
+      md += `\n> [!WARNING]\n> Output truncated: showing ${displayedRows} of ${rows.length} rows (exceeded ${Math.round(maxOutputBytes / 1024)}KB limit). Narrow your query with LIMIT or specific columns.\n`;
+      return md;
+    }
+
+    md += rowLine;
+    totalBytes += rowBytes;
+    displayedRows++;
   }
   return md;
 }
 
 // 1. Tool: db_list_tables
 async function handleListTables(args) {
-  const target = resolveConnection(args.connection);
-  if (!target) {
-    return { error: 'No database specified and none detected in current workspace (provide a path to a .db file or a postgres:// connection URL).' };
-  }
+  const resolved = resolveConnection(args.connection);
+  if (resolved.error) return { error: resolved.error };
+  const target = resolved.target;
 
   if (isPostgres(target)) {
     const client = new PgClient({ connectionString: target });
@@ -173,8 +230,9 @@ async function handleDescribeTable(args) {
   const table = (args.table || '').trim();
   if (!table) return { error: 'Table parameter is required' };
 
-  const target = resolveConnection(args.connection);
-  if (!target) return { error: 'No database connection or file found' };
+  const resolved = resolveConnection(args.connection);
+  if (resolved.error) return { error: resolved.error };
+  const target = resolved.target;
 
   if (isPostgres(target)) {
     const client = new PgClient({ connectionString: target });
@@ -292,8 +350,9 @@ async function handleQuery(args) {
   }
 
   const limit = Math.min(parseInt(args.limit || '25', 10), 100);
-  const target = resolveConnection(args.connection);
-  if (!target) return { error: 'No database connection or file found' };
+  const resolved = resolveConnection(args.connection);
+  if (resolved.error) return { error: resolved.error };
+  const target = resolved.target;
 
   // Inject limit if not already present
   if (!query.toUpperCase().includes('LIMIT') && !cleaned.startsWith('EXPLAIN') && !cleaned.startsWith('PRAGMA')) {
@@ -347,8 +406,9 @@ async function handleQuery(args) {
 
 // 4. Tool: db_schema_dump
 async function handleSchemaDump(args) {
-  const target = resolveConnection(args.connection);
-  if (!target) return { error: 'No database connection or file found' };
+  const resolved = resolveConnection(args.connection);
+  if (resolved.error) return { error: resolved.error };
+  const target = resolved.target;
 
   if (isPostgres(target)) {
     const listRes = await handleListTables(args);
@@ -449,5 +509,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   return { content: [{ type: 'text', text: result.text || 'Success' }] };
 });
 
-const transport = new StdioServerTransport();
-await server.connect(transport);
+export { server, handleListTables, handleDescribeTable, handleQuery, handleSchemaDump };
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+}

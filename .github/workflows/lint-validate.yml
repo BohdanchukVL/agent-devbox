@@ -2,7 +2,7 @@ name: Lint and Validate
 
 on:
   push:
-    branches: [main]
+    branches: [main, refactoring, security]
   pull_request:
 
 permissions:
@@ -95,3 +95,7 @@ jobs:
       - name: Check mcp/code-intel npm audit
         run: |
           cd mcp/code-intel && npm audit --audit-level=high
+
+      - name: Run mcp/db tests
+        run: |
+          cd mcp/db && npm test

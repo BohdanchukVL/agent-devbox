@@ -74,11 +74,12 @@ if [ ! -f /opt/devbox/install-base.sh ] && [ ! -f /opt/devbox/provisioning/insta
   rm -f "$PAYLOAD_TAR"
 fi
 
-# Scrub sensitive GitHub token if it was provided
-if [ -f /etc/devbox/devbox.env ] && grep -q '^PROVISIONING_TOKEN=' /etc/devbox/devbox.env; then
+# Scrub sensitive provisioning URLs and tokens immediately after download
+if [ -f /etc/devbox/devbox.env ]; then
   sed -i '/^PROVISIONING_TOKEN=/d' /etc/devbox/devbox.env 2>/dev/null || true
+  sed -i '/^PROVISIONING_TARBALL_URL=/d' /etc/devbox/devbox.env 2>/dev/null || true
 fi
-unset PROVISIONING_TOKEN TAILSCALE_AUTHKEY
+unset PROVISIONING_TOKEN PROVISIONING_TARBALL_URL
 
 # Create symlinks in /opt/devbox for files under /opt/devbox/provisioning
 if [ -d /opt/devbox/provisioning ]; then
@@ -101,6 +102,10 @@ fi
 
 if [ -f /opt/devbox/tmux-status.sh ]; then
   install -D -m 0755 -o "$DEVBOX_USER" -g "$DEVBOX_USER" /opt/devbox/tmux-status.sh "/home/$DEVBOX_USER/.devbox/bin/tmux-status"
+fi
+
+if [ -f /opt/devbox/smoke-test.sh ]; then
+  install -m 0755 /opt/devbox/smoke-test.sh /usr/local/bin/devbox-doctor
 fi
 
 if [ -f /opt/devbox/osc7.sh ]; then
@@ -126,6 +131,33 @@ log "Executing install-shell.sh..."
 
 # Ensure dev user owns all files in home directory
 chown -R "$DEVBOX_USER:$DEVBOX_USER" "/home/$DEVBOX_USER" 2>/dev/null || true
+
+# Post-provisioning secret scrubbing: remove remaining auth keys from environment
+if [ -f /etc/devbox/devbox.env ]; then
+  sed -i '/^TAILSCALE_AUTHKEY=/d' /etc/devbox/devbox.env 2>/dev/null || true
+  sed -i '/^DEVBOX_WEB_TOKEN=/d' /etc/devbox/devbox.env 2>/dev/null || true
+  chmod 0600 /etc/devbox/devbox.env
+fi
+
+# Clean up cloud-init cache containing initial user-data payload
+find /var/lib/cloud -name "user-data.txt" -exec shred -u {} + 2>/dev/null || true
+chmod 0600 /var/log/cloud-init*.log /var/log/devbox-*.log 2>/dev/null || true
+
+# Restrict cloud instance metadata endpoint (169.254.169.254) to root only
+# Prevents unprivileged/compromised agent sessions from querying instance metadata or tokens
+if command -v iptables >/dev/null 2>&1; then
+  iptables -C OUTPUT -m owner ! --uid-owner 0 -d 169.254.169.254 -j DROP 2>/dev/null || \
+    iptables -A OUTPUT -m owner ! --uid-owner 0 -d 169.254.169.254 -j DROP 2>/dev/null || true
+fi
+
+# Execute readiness smoke tests before declaring completion
+if [ -x /opt/devbox/smoke-test.sh ]; then
+  log "Executing readiness verification smoke tests..."
+  /opt/devbox/smoke-test.sh || {
+    echo "Readiness smoke tests failed" > /etc/devbox/.failed
+    exit 1
+  }
+fi
 
 rm -f /etc/devbox/.failed
 touch /etc/devbox/.provisioned

@@ -117,6 +117,21 @@ EOF
   chown "$U:$U" "$H/.claude/settings.json"
 fi
 
+# Configure persistent memory storage (persisting across VM rebuilds if /workspace is mounted)
+if mountpoint -q /workspace 2>/dev/null; then
+  MEMORY_DIR="/workspace/.devbox"
+else
+  MEMORY_DIR="$H/.devbox"
+fi
+install -d -o "$U" -g "$U" "$MEMORY_DIR" "$H/.devbox"
+MEMORY_PATH="$MEMORY_DIR/memory.jsonl"
+touch "$MEMORY_PATH"
+chown "$U:$U" "$MEMORY_PATH"
+chmod 0600 "$MEMORY_PATH"
+if [ "$MEMORY_DIR" != "$H/.devbox" ]; then
+  ln -sf "$MEMORY_PATH" "$H/.devbox/memory.jsonl" 2>/dev/null || true
+fi
+
 # Pre-configure MCP for Antigravity
 cat > "$H/.gemini/config/mcp_config.json" <<EOF
 {
@@ -133,7 +148,7 @@ cat > "$H/.gemini/config/mcp_config.json" <<EOF
       "command": "mcp-server-memory",
       "args": [],
       "env": {
-        "MEMORY_FILE_PATH": "$H/.devbox/memory.jsonl"
+        "MEMORY_FILE_PATH": "$MEMORY_PATH"
       }
     },
     "playwright": {

@@ -3,7 +3,7 @@ name: CLI CI
 # The devbox CLI lives in cli/. Path-filtered so infra-only changes skip Rust.
 on:
   push:
-    branches: [main]
+    branches: [main, refactoring, security]
     paths: ["cli/**", ".github/workflows/cli-ci.yml"]
   pull_request:
     paths: ["cli/**", ".github/workflows/cli-ci.yml"]
