@@ -103,7 +103,8 @@ fi
 
 # Configure Claude Code statusLine hook to export live rate limits to /tmp/.claude-status.json
 if [ -f "$H/.claude/settings.json" ]; then
-  sudo -u "$U" jq '.statusLine = {"type": "command", "command": "jq -c . > /tmp/.claude-status.json"}' "$H/.claude/settings.json" > "$H/.claude/settings.json.tmp" && mv "$H/.claude/settings.json.tmp" "$H/.claude/settings.json"
+  jq '.statusLine = {"type": "command", "command": "jq -c . > /tmp/.claude-status.json"}' "$H/.claude/settings.json" > "$H/.claude/settings.json.tmp" && mv "$H/.claude/settings.json.tmp" "$H/.claude/settings.json"
+  chown "$U:$U" "$H/.claude/settings.json"
 else
   cat > "$H/.claude/settings.json" <<EOF
 {
