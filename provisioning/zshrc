@@ -12,11 +12,15 @@ export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"
 # already inside tmux (no nesting). Escape hatch: `ssh dev@host bash`.
 if [[ $- == *i* ]] && [[ -z ${TMUX:-} ]] && [[ -n ${SSH_CONNECTION:-} ]] && command -v tmux >/dev/null; then
   [[ "$TERM" == "xterm" ]] && export TERM="xterm-256color"
+  # Clean up terminal modes (disable mouse tracking, bracketed paste, etc.) on detach or disconnect
+  trap 'printf "\e[?1000l\e[?1002l\e[?1003l\e[?1004l\e[?1005l\e[?1006l\e[?1015l\e[?2004l\e[?25h\e[?1049l"' EXIT INT TERM HUP
   if [[ -d /workspace ]] && [[ -w /workspace ]]; then
-    exec tmux new -A -s main -c /workspace
+    tmux new -A -s main -c /workspace
   else
-    exec tmux new -A -s main
+    tmux new -A -s main
   fi
+  printf "\e[?1000l\e[?1002l\e[?1003l\e[?1004l\e[?1005l\e[?1006l\e[?1015l\e[?2004l\e[?25h\e[?1049l"
+  exit 0
 fi
 
 # ── history ───────────────────────────────────────────────────────────────

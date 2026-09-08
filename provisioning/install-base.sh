@@ -108,6 +108,9 @@ cat > /etc/ssh/sshd_config.d/99-devbox.conf <<'EOF'
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 PermitRootLogin no
+ClientAliveInterval 30
+ClientAliveCountMax 120
+TCPKeepAlive yes
 EOF
 systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
 
