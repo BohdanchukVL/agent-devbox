@@ -193,15 +193,19 @@ EOF
             [ "$cl_cost" = "-" ] && cl_cost=""
         fi
 
-        # the 5h session limit is account-wide: fall back to the newest snapshot for it
-        rl_src="$sf"
-        [ -z "$rl_src" ] && rl_src="$newest"
-        if [ -n "$rl_src" ]; then
-            rl5=$(jq -r --argjson now "$(date +%s)" '
-              .rate_limits.five_hour
-              | if (. | type) != "object" or .used_percentage == null
-                   or (.resets_at != null and .resets_at < $now) then empty
-                else (.used_percentage | floor | if . < 0 then 0 elif . > 100 then 100 else . end) end' "$rl_src" 2>/dev/null)
+        # the 5h session limit is account-wide: take it from the newest snapshot
+        # whose window has not reset yet (a pane's own snapshot may be stale)
+        if [ -n "$newest" ]; then
+            now_ts=$(date +%s)
+            while IFS= read -r f; do
+                [ -n "$f" ] || continue
+                rl5=$(jq -r --argjson now "$now_ts" '
+                  .rate_limits.five_hour
+                  | if (. | type) != "object" or .used_percentage == null
+                       or (.resets_at != null and .resets_at < $now) then empty
+                    else (.used_percentage | floor | if . < 0 then 0 elif . > 100 then 100 else . end) end' "$f" 2>/dev/null)
+                [ -n "$rl5" ] && break
+            done < <(ls -t "$status_dir"/*.json 2>/dev/null)
         fi
 
         # Layout: claude [bar = 5h session limit USED, fills up as you spend] N%  ctx-tokens/window  $cost
