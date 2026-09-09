@@ -18,7 +18,7 @@ A fresh Ubuntu 24.04 server with:
 - **Codex Sandbox**: bubblewrap (`bwrap`) pre-configured with unprivileged user namespaces for secure local execution
 - **Headless browser**: Chromium via Playwright, so agents can run E2E tests and take screenshots (optional, on by default)
 - **Dev shell**: zsh with autosuggestions, syntax highlighting, a starship prompt, fzf and zoxide, plus modern CLIs (eza, bat, fd, ripgrep, jq, yq, delta, lazygit, direnv, shellcheck, httpie) and neovim
-- **tmux**: a persistent session auto-attached on SSH login — with directory-labelled tabs and a live AI status bar (auto-detects Claude, Codex, Agy; context window, 5h/7d usage limits and cost come from Claude Code's statusLine hook, activity `⚡` for Codex and Agy)
+- **tmux**: a persistent session auto-attached on SSH login — with directory-labelled tabs and a live AI status bar (auto-detects Claude, Codex, Agy; the bar is what is left of the 5h session limit, then 7d left, context tokens and cost, sourced from Claude Code's statusLine hook; activity `⚡` for Codex and Agy)
 - **Runtimes**: Node.js 22, npm, pnpm, Python 3, pipx
 - **Docker**: Engine + Compose plugin (optional)
 - **Workspace**: `/workspace` owned by the dev user (on Hetzner: a separate volume, so it can outlive the server type)

@@ -34,17 +34,18 @@ if [ -n "$sid" ] && mkdir -p "$STATE_DIR" 2>/dev/null; then
   find "$STATE_DIR" -maxdepth 1 -name '*.json' -mmin +1440 -delete 2>/dev/null || true
 fi
 
-# Status row for Claude Code: model · ctx N% · 5h N% · 7d N% · $cost
+# Status row for Claude Code: model · ctx N% · 5h N% left · 7d N% left · $cost
 # (cost only for API-key accounts: subscriptions report rate_limits instead)
 printf '%s' "$input" | jq -r '
   def pct(x): if x == null then "?" else ((x | floor | tostring) + "%") end;
+  def left(x): if x == null then "?" else (((100 - x) | floor | if . < 0 then 0 else . end | tostring) + "% left") end;
   def usd(x): ((x * 100) | round) as $c
               | "$" + (($c / 100) | floor | tostring) + "."
               + (("0" + (($c % 100) | tostring)) | .[-2:]);
   [ (.model.display_name // .model.id // "claude"),
     ("ctx " + pct(.context_window.used_percentage)),
-    (if .rate_limits.five_hour.used_percentage != null then "5h " + pct(.rate_limits.five_hour.used_percentage) else empty end),
-    (if .rate_limits.seven_day.used_percentage != null then "7d " + pct(.rate_limits.seven_day.used_percentage) else empty end),
+    (if .rate_limits.five_hour.used_percentage != null then "5h " + left(.rate_limits.five_hour.used_percentage) else empty end),
+    (if .rate_limits.seven_day.used_percentage != null then "7d " + left(.rate_limits.seven_day.used_percentage) else empty end),
     (if (.rate_limits == null) and ((.cost.total_cost_usd // 0) > 0) then usd(.cost.total_cost_usd) else empty end)
   ] | join(" · ")
 ' 2>/dev/null

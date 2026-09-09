@@ -2,7 +2,7 @@
 # devbox tmux status segments. Called from ~/.tmux.conf status-right.
 #   tmux-status cwd <dir>   → current dir, $HOME→~, long paths trimmed to …/parent/leaf
 #   tmux-status git <dir>   → branch name (+ '*' if the tree is dirty), else empty
-#   tmux-status ai <dir>    → context window bar, tokens, 5h/7d limits and cost of the agent in the pane
+#   tmux-status ai <dir>    → [bar = session limit LEFT] 7d left, context tokens, cost of the agent in the pane
 #   tmux-status load        → 1/5/15-minute load average
 render_bar() {
     _pct="$1"
@@ -34,6 +34,37 @@ render_bar() {
     while [ "$_i" -lt "$_empty" ]; do _bar_empty="${_bar_empty}${_char_empty}"; _i=$((_i + 1)); done
 
     printf '#[fg=colour243][%s%s#[fg=colour238]%s#[fg=colour243]] %s%d%%#[default]' "$_col" "$_bar" "$_bar_empty" "$_col" "$_pct"
+}
+
+# bar for what is LEFT of a limit: fill = remaining %, red when little is left
+render_left_bar() {
+    _left="$1"
+    _width="${2:-${AI_BAR_WIDTH:-10}}"
+    [ -z "$_left" ] && return
+    [ "$_left" -lt 0 ] 2>/dev/null && _left=0
+    [ "$_left" -gt 100 ] 2>/dev/null && _left=100
+    _col=$(lim_left_color "$_left")
+    _filled=$(( (_left * _width + 50) / 100 ))
+    [ "$_filled" -gt "$_width" ] && _filled="$_width"
+    _empty=$(( _width - _filled ))
+    _char_fill="${AI_BAR_FILL:-■}"
+    _char_empty="${AI_BAR_EMPTY:-■}"
+    _bar=""; _i=0
+    while [ "$_i" -lt "$_filled" ]; do _bar="${_bar}${_char_fill}"; _i=$((_i + 1)); done
+    _bar_empty=""; _i=0
+    while [ "$_i" -lt "$_empty" ]; do _bar_empty="${_bar_empty}${_char_empty}"; _i=$((_i + 1)); done
+    printf '#[fg=colour243][%s%s#[fg=colour238]%s#[fg=colour243]] %s%d%%#[default]' "$_col" "$_bar" "$_bar_empty" "$_col" "$_left"
+}
+
+# colour for a REMAINING percentage: green while plenty is left, red under 20%
+lim_left_color() {
+    if [ "$1" -le 20 ] 2>/dev/null; then
+        printf '#[fg=colour203,bold]'
+    elif [ "$1" -le 50 ] 2>/dev/null; then
+        printf '#[fg=colour214]'
+    else
+        printf '#[fg=colour108]'
+    fi
 }
 
 # colour for a percentage of a limit (same thresholds as render_bar)
@@ -166,7 +197,7 @@ EOF
         # scraping, no undocumented ~/.claude.json fields, no busy heuristic:
         # Claude Code exposes no reliable "busy" signal on disk.
         status_dir="${DEVBOX_CLAUDE_STATUS_DIR:-$HOME/.devbox/claude-status}"
-        cl_pct=""; cur_tok=""; win_size=""; cl_cost=""; has_rl=""
+        cur_tok=""; win_size=""; cl_cost=""; has_rl=""
         rl5=""; rl7=""
         sf=""; newest=""
         if [ -d "$status_dir" ]; then
@@ -198,8 +229,7 @@ EOF
                 s(.cost.total_cost_usd),
                 (if .rate_limits == null then "0" else "1" end)
               ] | join("\t")' "$sf" 2>/dev/null)
-            IFS=$'\t' read -r cl_pct cur_tok win_size cl_cost has_rl <<<"$cl_data"
-            [ "$cl_pct" = "-" ] && cl_pct=""
+            IFS=$'\t' read -r _ cur_tok win_size cl_cost has_rl <<<"$cl_data"
             [ "$cur_tok" = "-" ] && cur_tok=""
             [ "$win_size" = "-" ] && win_size=""
             [ "$cl_cost" = "-" ] && cl_cost=""
@@ -212,28 +242,27 @@ EOF
             rl_data=$(jq -r --argjson now "$(date +%s)" '
               def w(x): if (x | type) != "object" or x.used_percentage == null
                            or (x.resets_at != null and x.resets_at < $now) then "-"
-                        else (x.used_percentage | floor | tostring) end;
+                        else ((100 - x.used_percentage) | floor | if . < 0 then 0 else . end | tostring) end;
               [ w(.rate_limits.five_hour), w(.rate_limits.seven_day) ] | join("\t")' "$rl_src" 2>/dev/null)
             IFS=$'\t' read -r rl5 rl7 <<<"$rl_data"
             [ "$rl5" = "-" ] && rl5=""
             [ "$rl7" = "-" ] && rl7=""
         fi
 
+        # Layout: claude [bar = 5h session budget LEFT] N%  7d N%  ctx-tokens/window  $cost
+        # The bar is the session limit, never the context window: context is the token label.
         out="#[fg=colour209,bold]claude#[default]"
         if [ -z "$sf" ] && [ -z "$newest" ]; then
             out="$out #[fg=colour243]no statusLine#[default]"
         else
-            if [ -n "$cl_pct" ]; then
-                bar_str=$(render_bar "$cl_pct")
+            if [ -n "$rl5" ]; then
+                bar_str=$(render_left_bar "$rl5")
                 [ -n "$bar_str" ] && out="$out $bar_str"
-                if [ -n "$cur_tok" ] && [ -n "$win_size" ]; then
-                    out="$out #[fg=colour246]$(fmt_tokens "$cur_tok")/$(fmt_tokens "$win_size")#[default]"
-                fi
             fi
-            lim=""
-            [ -n "$rl5" ] && lim="5h $(lim_color "$rl5")$rl5%#[default]"
-            [ -n "$rl7" ] && lim="${lim:+$lim }7d $(lim_color "$rl7")$rl7%#[default]"
-            [ -n "$lim" ] && out="$out #[fg=colour246]$lim"
+            [ -n "$rl7" ] && out="$out #[fg=colour246]7d $(lim_left_color "$rl7")$rl7%#[default]"
+            if [ -n "$cur_tok" ] && [ -n "$win_size" ]; then
+                out="$out #[fg=colour246]$(fmt_tokens "$cur_tok")/$(fmt_tokens "$win_size")#[default]"
+            fi
             # dollar cost only for API-key accounts; subscriptions report rate_limits instead
             if [ "$has_rl" != "1" ] && [ -n "$cl_cost" ]; then
                 cost_fmt=$(awk -v c="$cl_cost" 'BEGIN { if (c + 0 > 0) printf "%.2f", c }' 2>/dev/null)
@@ -245,7 +274,6 @@ EOF
 
     codex)
         cx_busy=""
-        cx_pct=""
         cx_tok_str=""
         cx_lim=""
         if [ -d "$HOME/.codex/sessions" ]; then
@@ -345,24 +373,21 @@ EOF
                 done
             fi
 
-            # bottleneck rate limit (max of primary/secondary) as its own segment
+            # bar = what is LEFT of the bottleneck rate limit (max of primary/secondary)
             if [ -n "$cx_used" ]; then
-                cx_lim=$(awk -v u="$cx_used" 'BEGIN { printf "%d", u + 0.5 }')
+                cx_lim=$(awk -v u="$cx_used" 'BEGIN { l = 100 - u; if (l < 0) l = 0; printf "%d", l }')
             fi
-            # bar = context window fill of the last turn
             [ "$cx_tok" -ge 0 ] 2>/dev/null || cx_tok=0
             [ "$cx_win" -gt 0 ] 2>/dev/null || cx_win=258400
-            cx_pct=$(( cx_tok * 100 / cx_win ))
             cx_tok_str="$(fmt_tokens "$cx_tok")/$(fmt_tokens "$cx_win")"
         fi
 
-        [ -z "$cx_pct" ] && cx_pct=0 && cx_tok_str="0/258k"
-
-        bar_str=$(render_bar "$cx_pct")
         out="#[fg=colour75,bold]codex${cx_busy}#[default]"
-        [ -n "$bar_str" ] && out="$out $bar_str"
+        if [ -n "$cx_lim" ]; then
+            bar_str=$(render_left_bar "$cx_lim")
+            [ -n "$bar_str" ] && out="$out $bar_str"
+        fi
         [ -n "$cx_tok_str" ] && out="$out #[fg=colour246]$cx_tok_str#[default]"
-        [ -n "$cx_lim" ] && out="$out #[fg=colour246]lim $(lim_color "$cx_lim")$cx_lim%#[default]"
         print_ai "$out"
         ;;
 
