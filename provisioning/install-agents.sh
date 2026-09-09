@@ -101,21 +101,28 @@ elif [ -f "/opt/devbox/provisioning/CLAUDE.md" ]; then
   install -m 0644 -o "$U" -g "$U" /opt/devbox/provisioning/CLAUDE.md "$H/.gemini/config/AGENTS.md"
 fi
 
-# Configure Claude Code statusLine hook to export live rate limits to /tmp/.claude-status.json
-if [ -f "$H/.claude/settings.json" ]; then
-  jq '.statusLine = {"type": "command", "command": "jq -c . > /tmp/.claude-status.json"}' "$H/.claude/settings.json" > "$H/.claude/settings.json.tmp" && mv "$H/.claude/settings.json.tmp" "$H/.claude/settings.json"
-  chown "$U:$U" "$H/.claude/settings.json"
+# Configure Claude Code statusLine hook (provisioning/claude-statusline.sh): it
+# persists the session JSON per session for the tmux status bar and prints
+# Claude Code's own status row. refreshInterval keeps rate-limit windows and
+# idle sessions current (seconds).
+STATUSLINE_BIN="$H/.devbox/bin/claude-statusline"
+install -d -o "$U" -g "$U" "$H/.claude"
+if [ -f "$H/.claude/settings.json" ] && jq -e . "$H/.claude/settings.json" >/dev/null 2>&1; then
+  jq --arg cmd "$STATUSLINE_BIN" '.statusLine = {"type": "command", "command": $cmd, "refreshInterval": 30}' \
+    "$H/.claude/settings.json" > "$H/.claude/settings.json.tmp" && mv "$H/.claude/settings.json.tmp" "$H/.claude/settings.json"
 else
   cat > "$H/.claude/settings.json" <<EOF
 {
   "statusLine": {
     "type": "command",
-    "command": "jq -c . > /tmp/.claude-status.json"
+    "command": "$STATUSLINE_BIN",
+    "refreshInterval": 30
   }
 }
 EOF
-  chown "$U:$U" "$H/.claude/settings.json"
 fi
+chown "$U:$U" "$H/.claude/settings.json"
+rm -f /tmp/.claude-status.json 2>/dev/null || true
 
 # Configure persistent memory storage (persisting across VM rebuilds if /workspace is mounted)
 if mountpoint -q /workspace 2>/dev/null; then

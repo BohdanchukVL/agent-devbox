@@ -104,6 +104,10 @@ if [ -f /opt/devbox/tmux-status.sh ]; then
   install -D -m 0755 -o "$DEVBOX_USER" -g "$DEVBOX_USER" /opt/devbox/tmux-status.sh "/home/$DEVBOX_USER/.devbox/bin/tmux-status"
 fi
 
+if [ -f /opt/devbox/claude-statusline.sh ]; then
+  install -D -m 0755 -o "$DEVBOX_USER" -g "$DEVBOX_USER" /opt/devbox/claude-statusline.sh "/home/$DEVBOX_USER/.devbox/bin/claude-statusline"
+fi
+
 if [ -f /opt/devbox/smoke-test.sh ]; then
   install -m 0755 /opt/devbox/smoke-test.sh /usr/local/bin/devbox-doctor
 fi

@@ -2,7 +2,7 @@
 # devbox tmux status segments. Called from ~/.tmux.conf status-right.
 #   tmux-status cwd <dir>   → current dir, $HOME→~, long paths trimmed to …/parent/leaf
 #   tmux-status git <dir>   → branch name (+ '*' if the tree is dirty), else empty
-#   tmux-status ai <dir>    → AI session context limit progress bar, token usage & cost
+#   tmux-status ai <dir>    → context window bar, tokens, 5h/7d limits and cost of the agent in the pane
 #   tmux-status load        → 1/5/15-minute load average
 render_bar() {
     _pct="$1"
@@ -34,6 +34,17 @@ render_bar() {
     while [ "$_i" -lt "$_empty" ]; do _bar_empty="${_bar_empty}${_char_empty}"; _i=$((_i + 1)); done
 
     printf '#[fg=colour243][%s%s#[fg=colour238]%s#[fg=colour243]] %s%d%%#[default]' "$_col" "$_bar" "$_bar_empty" "$_col" "$_pct"
+}
+
+# colour for a percentage of a limit (same thresholds as render_bar)
+lim_color() {
+    if [ "$1" -ge 80 ] 2>/dev/null; then
+        printf '#[fg=colour203,bold]'
+    elif [ "$1" -ge 50 ] 2>/dev/null; then
+        printf '#[fg=colour214]'
+    else
+        printf '#[fg=colour108]'
+    fi
 }
 
 fmt_tokens() {
@@ -150,114 +161,85 @@ EOF
 
     case "$running_agent" in
     claude)
-        claude_json="$HOME/.claude.json"
-        [ -f "$claude_json" ] || claude_json="$HOME/.claude-cc/.claude.json"
-        cl_cost=""
-        cl_pct=""
-        cl_tok_str=""
-        cl_cost_str=""
-        cl_busy=""
-
-        active_sess_id=""
-        for s in "$HOME/.claude/sessions/"*.json "$HOME/.claude-cc/sessions/"*.json; do
-            [ -f "$s" ] || continue
-            if grep -q "$proj_dir" "$s" 2>/dev/null; then
-                active_sess_id=$(jq -r '.sessionId // empty' "$s" 2>/dev/null)
-                if grep -q '"status":"busy"' "$s" 2>/dev/null; then
-                    cl_busy="⚡"
+        # Everything comes from the statusLine hook (claude-statusline), which
+        # persists Claude Code's own session JSON per session_id. No transcript
+        # scraping, no undocumented ~/.claude.json fields, no busy heuristic:
+        # Claude Code exposes no reliable "busy" signal on disk.
+        status_dir="${DEVBOX_CLAUDE_STATUS_DIR:-$HOME/.devbox/claude-status}"
+        cl_pct=""; cur_tok=""; win_size=""; cl_cost=""; has_rl=""
+        rl5=""; rl7=""
+        sf=""; newest=""
+        if [ -d "$status_dir" ]; then
+            # newest snapshot whose cwd / project dir matches this pane's dir or git
+            # root; compare real paths too, in case /workspace or the project is a symlink
+            dir_real=$(cd "$dir" 2>/dev/null && pwd -P) || dir_real="$dir"
+            proj_real=$(cd "$proj_dir" 2>/dev/null && pwd -P) || proj_real="$proj_dir"
+            while IFS= read -r f; do
+                [ -n "$f" ] || continue
+                [ -z "$newest" ] && newest="$f"
+                if jq -e --arg d "$dir" --arg p "$proj_dir" --arg dr "$dir_real" --arg pr "$proj_real" '
+                      [.cwd, .workspace.current_dir, .workspace.project_dir]
+                      | map(select(type == "string")) | any(. == $d or . == $p or . == $dr or . == $pr)
+                   ' "$f" >/dev/null 2>&1; then
+                    sf="$f"
+                    break
                 fi
-                break
-            fi
-        done
-
-        if [ -f "$claude_json" ]; then
-            claude_data=$(jq -r --arg d "$proj_dir" --arg raw "$dir" '
-              (.projects[$d] // .projects[$raw] // empty) |
-              [
-                ((.lastCost // 0) * 100 | floor / 100),
-                (.lastSessionId // "-"),
-                ((.lastTotalInputTokens // 0) + (.lastTotalCacheReadInputTokens // 0) + (.lastTotalCacheCreationInputTokens // 0))
-              ] | @tsv
-            ' "$claude_json" 2>/dev/null)
-
-            if [ -n "$claude_data" ]; then
-                IFS="$(printf '\t')" read -r cl_cost cl_sess_id _ <<EOF
-$claude_data
-EOF
-                slug=$(printf '%s' "$proj_dir" | tr '/' '-')
-                session_file=""
-                for base in "$HOME/.claude/projects" "$HOME/.claude-cc/projects"; do
-                    if [ -n "$active_sess_id" ] && [ -f "$base/$slug/$active_sess_id.jsonl" ]; then
-                        session_file="$base/$slug/$active_sess_id.jsonl"
-                        break
-                    elif [ "$cl_sess_id" != "-" ] && [ -f "$base/$slug/$cl_sess_id.jsonl" ]; then
-                        session_file="$base/$slug/$cl_sess_id.jsonl"
-                        break
-                    fi
-                done
-                if [ -z "$session_file" ]; then
-                    for base in "$HOME/.claude/projects" "$HOME/.claude-cc/projects"; do
-                        latest=$(ls -td "$base/$slug"/*.jsonl 2>/dev/null | head -n 1)
-                        [ -n "$latest" ] && session_file="$latest" && break
-                    done
-                fi
-
-                if [ -n "$session_file" ]; then
-                    tok_data=$(tail -n 25 "$session_file" 2>/dev/null | jq -s -r '
-                      [.[] | select(.message.usage != null)] | last // empty |
-                      ((.message.usage.input_tokens // 0) + (.message.usage.cache_read_input_tokens // 0) + (.message.usage.cache_creation_input_tokens // 0)) as $tok |
-                      "\($tok) \(.message.model // "-")"
-                    ' 2>/dev/null)
-                    if [ -n "$tok_data" ]; then
-                        read -r cur_tok model <<EOF
-$tok_data
-EOF
-                        if [ "$cur_tok" -gt 0 ] 2>/dev/null; then
-                            max_tok=200000
-                            case "$model" in
-                                *1m*|*1M*) max_tok=1000000 ;;
-                                *) [ "$cur_tok" -gt 200000 ] 2>/dev/null && max_tok=1000000 ;;
-                            esac
-                            cl_pct=$(( (cur_tok * 100) / max_tok ))
-                            cl_tok_str="$(fmt_tokens "$cur_tok")/$(fmt_tokens "$max_tok")"
-                        fi
-                    fi
-                fi
-
-                # Check for live 5h session rate limits piped by Claude Code statusLine hook
-                if [ -f "/tmp/.claude-status.json" ]; then
-                    cl_rl=$(jq -r '(.rate_limits.five_hour.used_percentage // .rate_limits.seven_day.used_percentage // empty)' /tmp/.claude-status.json 2>/dev/null)
-                    if [ -n "$cl_rl" ]; then
-                        cl_pct=$(printf "%.0f" "$cl_rl" 2>/dev/null || echo 0)
-                    fi
-                fi
-
-                # Check if account is on a flat subscription (Max/Pro) vs pay-as-you-go API
-                is_subscription=false
-                for cred in "$HOME/.claude/.credentials.json" "$HOME/.claude-cc/.credentials.json"; do
-                    if [ -f "$cred" ]; then
-                        sub_t=$(jq -r '.claudeAiOauth.subscriptionType // empty' "$cred" 2>/dev/null)
-                        case "$sub_t" in
-                            max*|pro*|team*|enterprise*) is_subscription=true; break ;;
-                        esac
-                    fi
-                done
-
-                # Only show hypothetical dollar cost for pay-as-you-go API users, not subscriptions
-                if [ "$is_subscription" = false ] && [ -n "$cl_cost" ] && [ "$cl_cost" != "0" ] && [ "$cl_cost" != "-" ]; then
-                    cost_fmt=$(awk -v c="$cl_cost" 'BEGIN { printf "%.2f", c }' 2>/dev/null)
-                    [ -n "$cost_fmt" ] && cl_cost_str="\$${cost_fmt}"
-                fi
-            fi
+            done < <(ls -t "$status_dir"/*.json 2>/dev/null)
         fi
 
-        [ -z "$cl_pct" ] && cl_pct=0 && cl_tok_str="0/200k"
+        if [ -n "$sf" ]; then
+            cl_data=$(jq -r '
+              def s(x): if x == null then "-" else (x | tostring) end;
+              [ s(.context_window.used_percentage | if . == null then null else floor end),
+                s(.context_window.current_usage
+                  | if . == null then null
+                    else ((.input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0)) end),
+                s(.context_window.context_window_size),
+                s(.cost.total_cost_usd),
+                (if .rate_limits == null then "0" else "1" end)
+              ] | join("\t")' "$sf" 2>/dev/null)
+            IFS=$'\t' read -r cl_pct cur_tok win_size cl_cost has_rl <<<"$cl_data"
+            [ "$cl_pct" = "-" ] && cl_pct=""
+            [ "$cur_tok" = "-" ] && cur_tok=""
+            [ "$win_size" = "-" ] && win_size=""
+            [ "$cl_cost" = "-" ] && cl_cost=""
+        fi
 
-        bar_str=$(render_bar "$cl_pct")
-        out="#[fg=colour209,bold]claude${cl_busy}#[default]"
-        [ -n "$bar_str" ] && out="$out $bar_str"
-        [ -n "$cl_tok_str" ] && out="$out #[fg=colour246]$cl_tok_str#[default]"
-        [ -n "$cl_cost_str" ] && out="$out #[fg=colour180]$cl_cost_str#[default]"
+        # rate limits are account-wide: fall back to the newest snapshot for them
+        rl_src="$sf"
+        [ -z "$rl_src" ] && rl_src="$newest"
+        if [ -n "$rl_src" ]; then
+            rl_data=$(jq -r --argjson now "$(date +%s)" '
+              def w(x): if (x | type) != "object" or x.used_percentage == null
+                           or (x.resets_at != null and x.resets_at < $now) then "-"
+                        else (x.used_percentage | floor | tostring) end;
+              [ w(.rate_limits.five_hour), w(.rate_limits.seven_day) ] | join("\t")' "$rl_src" 2>/dev/null)
+            IFS=$'\t' read -r rl5 rl7 <<<"$rl_data"
+            [ "$rl5" = "-" ] && rl5=""
+            [ "$rl7" = "-" ] && rl7=""
+        fi
+
+        out="#[fg=colour209,bold]claude#[default]"
+        if [ -z "$sf" ] && [ -z "$newest" ]; then
+            out="$out #[fg=colour243]no statusLine#[default]"
+        else
+            if [ -n "$cl_pct" ]; then
+                bar_str=$(render_bar "$cl_pct")
+                [ -n "$bar_str" ] && out="$out $bar_str"
+                if [ -n "$cur_tok" ] && [ -n "$win_size" ]; then
+                    out="$out #[fg=colour246]$(fmt_tokens "$cur_tok")/$(fmt_tokens "$win_size")#[default]"
+                fi
+            fi
+            lim=""
+            [ -n "$rl5" ] && lim="5h $(lim_color "$rl5")$rl5%#[default]"
+            [ -n "$rl7" ] && lim="${lim:+$lim }7d $(lim_color "$rl7")$rl7%#[default]"
+            [ -n "$lim" ] && out="$out #[fg=colour246]$lim"
+            # dollar cost only for API-key accounts; subscriptions report rate_limits instead
+            if [ "$has_rl" != "1" ] && [ -n "$cl_cost" ]; then
+                cost_fmt=$(awk -v c="$cl_cost" 'BEGIN { if (c + 0 > 0) printf "%.2f", c }' 2>/dev/null)
+                [ -n "$cost_fmt" ] && out="$out #[fg=colour180]\$${cost_fmt}#[default]"
+            fi
+        fi
         print_ai "$out"
         ;;
 
@@ -265,6 +247,7 @@ EOF
         cx_busy=""
         cx_pct=""
         cx_tok_str=""
+        cx_lim=""
         if [ -d "$HOME/.codex/sessions" ]; then
             active_codex=""
             # 1. Try finding open session file from agent pane process tree via /proc
@@ -362,12 +345,15 @@ EOF
                 done
             fi
 
+            # bottleneck rate limit (max of primary/secondary) as its own segment
             if [ -n "$cx_used" ]; then
-                cx_pct=$(awk -v u="$cx_used" 'BEGIN { printf "%d", u + 0.5 }')
-                [ -z "$cx_tok" ] && cx_tok=0
-                [ -z "$cx_win" ] && cx_win=258400
-                cx_tok_str="$(fmt_tokens "$cx_tok")/$(fmt_tokens "$cx_win")"
+                cx_lim=$(awk -v u="$cx_used" 'BEGIN { printf "%d", u + 0.5 }')
             fi
+            # bar = context window fill of the last turn
+            [ "$cx_tok" -ge 0 ] 2>/dev/null || cx_tok=0
+            [ "$cx_win" -gt 0 ] 2>/dev/null || cx_win=258400
+            cx_pct=$(( cx_tok * 100 / cx_win ))
+            cx_tok_str="$(fmt_tokens "$cx_tok")/$(fmt_tokens "$cx_win")"
         fi
 
         [ -z "$cx_pct" ] && cx_pct=0 && cx_tok_str="0/258k"
@@ -376,6 +362,7 @@ EOF
         out="#[fg=colour75,bold]codex${cx_busy}#[default]"
         [ -n "$bar_str" ] && out="$out $bar_str"
         [ -n "$cx_tok_str" ] && out="$out #[fg=colour246]$cx_tok_str#[default]"
+        [ -n "$cx_lim" ] && out="$out #[fg=colour246]lim $(lim_color "$cx_lim")$cx_lim%#[default]"
         print_ai "$out"
         ;;
 
@@ -463,7 +450,7 @@ all)
     [ -n "$git_str" ] && git_fmt=" #[fg=colour108]$git_str"
 
     # 3. ai segment
-    ai_fmt=$("$0" ai "$dir" "$pane_cmd" "$pane_pid" "$win_id")
+    ai_fmt=$(bash "$0" ai "$dir" "$pane_cmd" "$pane_pid" "$win_id")
 
     # 4. load segment
     load_fmt=""
