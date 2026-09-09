@@ -94,6 +94,20 @@ if [ "${INSTALL_ANTIGRAVITY:-true}" = "true" ]; then
   fi
 fi
 
+# 4b. Claude statusLine hook (feeds the tmux status bar)
+if [ "${INSTALL_CLAUDE:-true}" = "true" ]; then
+  if [ -x "$HOME_DIR/.devbox/bin/claude-statusline" ]; then
+    ok "Claude statusLine hook installed ($HOME_DIR/.devbox/bin/claude-statusline)"
+  else
+    fail "Claude statusLine hook missing at $HOME_DIR/.devbox/bin/claude-statusline"
+  fi
+  if jq -e --arg cmd "$HOME_DIR/.devbox/bin/claude-statusline" '.statusLine.command == $cmd' "$HOME_DIR/.claude/settings.json" >/dev/null 2>&1; then
+    ok "Claude settings.json statusLine points at the devbox hook"
+  else
+    warn "Claude settings.json statusLine is not configured for the devbox hook"
+  fi
+fi
+
 # 5. Docker daemon verification
 if [ "${INSTALL_DOCKER:-true}" = "true" ]; then
   if command -v docker >/dev/null 2>&1; then
