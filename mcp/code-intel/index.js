@@ -5,9 +5,87 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import os from 'node:os';
+
+// ── Ctags index cache ────────────────────────────────────────────────────
+const CACHE_DIR = path.join(os.homedir(), '.cache', 'devbox', 'code-intel');
+
+function cacheKeyForDir(dir) {
+  return crypto.createHash('sha1').update(dir).digest('hex');
+}
+
+function getCachePath(dir) {
+  return path.join(CACHE_DIR, `${cacheKeyForDir(dir)}.json`);
+}
+
+function getFreshnessKey(dir) {
+  try {
+    const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8', timeout: 3000 });
+    if (head.status !== 0) return null;
+    const status = spawnSync('git', ['status', '--porcelain'], { cwd: dir, encoding: 'utf8', timeout: 3000 });
+    const dirtyCount = (status.stdout || '').split('\n').filter(Boolean).length;
+    return `${head.stdout.trim()}:${dirtyCount}`;
+  } catch {
+    return null;
+  }
+}
+
+function loadCachedIndex(dir) {
+  const cachePath = getCachePath(dir);
+  try {
+    if (!fs.existsSync(cachePath)) return null;
+    const data = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
+    const currentKey = getFreshnessKey(dir);
+    if (currentKey && data.freshnessKey === currentKey) {
+      return data.tags;
+    }
+    return null; // stale
+  } catch {
+    return null;
+  }
+}
+
+// Track ongoing background rebuilds to avoid duplicates
+const _rebuildingDirs = new Set();
+
+function rebuildIndexInBackground(dir) {
+  if (_rebuildingDirs.has(dir)) return;
+  _rebuildingDirs.add(dir);
+
+  const ctagsArgs = ['--output-format=json', '--fields=+n+K', '-R', '-f', '-'];
+  for (const d of EXCLUDE_DIRS) {
+    ctagsArgs.push(`--exclude=${d}`);
+  }
+  ctagsArgs.push(dir);
+
+  const proc = spawn('ctags', ctagsArgs, { stdio: ['ignore', 'pipe', 'ignore'], timeout: 30000 });
+  let stdout = '';
+  proc.stdout.on('data', chunk => { stdout += chunk; });
+  proc.on('close', () => {
+    _rebuildingDirs.delete(dir);
+    try {
+      const tags = [];
+      for (const line of stdout.split('\n').filter(Boolean)) {
+        try {
+          const item = JSON.parse(line);
+          if (item._type === 'tag' && item.name && item.path && item.line) {
+            tags.push({ name: item.name, kind: item.kind || 'unknown', path: item.path, line: item.line });
+          }
+        } catch {}
+      }
+      if (tags.length > 0) {
+        fs.mkdirSync(CACHE_DIR, { recursive: true });
+        const freshnessKey = getFreshnessKey(dir);
+        fs.writeFileSync(getCachePath(dir), JSON.stringify({ freshnessKey, tags }));
+      }
+    } catch {}
+  });
+  proc.on('error', () => { _rebuildingDirs.delete(dir); });
+}
 
 // Standard ignore arguments for ripgrep and ctags
 const EXCLUDE_DIRS = [
@@ -163,43 +241,24 @@ function handleFindDefinition(args) {
       }
     }
 
-    // Fallback: If regex didn't match (e.g. macro or ctags-indexed tag), query ctags
+    // Fallback: If regex didn't match, query cached ctags index
     if (matches.length === 0) {
-      try {
-        const ctagsArgs = [
-          '--output-format=json',
-          '--fields=+n+K',
-          '-R',
-          '-f', '-'
-        ];
-        for (const dir of EXCLUDE_DIRS) {
-          ctagsArgs.push(`--exclude=${dir}`);
+      const cachedTags = loadCachedIndex(searchDir);
+      if (cachedTags) {
+        // Warm cache — search without spawning ctags
+        for (const item of cachedTags) {
+          const matchesQuery = exact ? item.name === symbol : item.name.toLowerCase().includes(symbol.toLowerCase());
+          if (matchesQuery && item.path && item.line) {
+            const relPath = path.relative(searchDir, item.path) || path.basename(item.path);
+            const snippet = getFileSnippet(item.path, item.line, 2, 12);
+            matches.push({ file: relPath, line: item.line, snippet });
+            if (matches.length >= 5) break;
+          }
         }
-        ctagsArgs.push(searchDir);
-
-        const ctagsRes = spawnSync('ctags', ctagsArgs, {
-          encoding: 'utf8',
-          timeout: 8000
-        });
-
-        const tagLines = (ctagsRes.stdout || '').split('\n').filter(Boolean);
-        for (const tl of tagLines) {
-          try {
-            const item = JSON.parse(tl);
-            const matchesQuery = exact ? item.name === symbol : item.name.toLowerCase().includes(symbol.toLowerCase());
-            if (matchesQuery && item.path && item.line) {
-              const relPath = path.relative(searchDir, item.path) || path.basename(item.path);
-              const snippet = getFileSnippet(item.path, item.line, 2, 12);
-              matches.push({
-                file: relPath,
-                line: item.line,
-                snippet
-              });
-              if (matches.length >= 5) break;
-            }
-          } catch {}
-        }
-      } catch {}
+      } else {
+        // Cold cache — trigger background rebuild for next call
+        rebuildIndexInBackground(searchDir);
+      }
     }
 
     if (matches.length === 0) {
