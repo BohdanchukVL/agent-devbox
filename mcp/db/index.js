@@ -168,27 +168,37 @@ async function handleListTables(args) {
   const resolved = resolveConnection(args.connection);
   if (resolved.error) return { error: resolved.error };
   const target = resolved.target;
+  const includeCounts = args.include_counts === true;
 
   if (isPostgres(target)) {
     const client = new PgClient({ connectionString: target });
     try {
       await client.connect();
+      await client.query("SET statement_timeout = '5s'");
       const res = await client.query(`
         SELECT table_name, table_type
         FROM information_schema.tables
         WHERE table_schema = 'public'
         ORDER BY table_name;
       `);
-      await client.end();
 
       if (res.rows.length === 0) {
+        await client.end();
         return { text: `Connected to PostgreSQL, but no tables found in 'public' schema.` };
       }
 
       let out = `### PostgreSQL Tables (${res.rows.length} total)\n`;
       for (const r of res.rows) {
-        out += `- \`${r.table_name}\` (${r.table_type.toLowerCase()})\n`;
+        let countSuffix = '';
+        if (includeCounts && r.table_type.toLowerCase() === 'base table') {
+          try {
+            const countRes = await client.query(`SELECT count(*) as count FROM "${r.table_name.replace(/"/g, '""')}"`);
+            countSuffix = `, ${parseInt(countRes.rows[0].count).toLocaleString()} rows`;
+          } catch {}
+        }
+        out += `- \`${r.table_name}\` (${r.table_type.toLowerCase()}${countSuffix})\n`;
       }
+      await client.end();
       return { text: out };
     } catch (err) {
       try { await client.end(); } catch {}
@@ -216,14 +226,14 @@ async function handleListTables(args) {
 
       let out = `### SQLite Tables (\`${path.basename(dbPath)}\` - ${rows.length} total)\n`;
       for (const r of rows) {
-        let count = 0;
-        if (r.type === 'table') {
+        let countSuffix = '';
+        if (includeCounts && r.type === 'table') {
           try {
             const countRow = db.prepare(`SELECT count(*) as count FROM "${escapeSqliteIdent(r.name)}"`).get();
-            count = countRow?.count ?? 0;
+            countSuffix = `, ${(countRow?.count ?? 0).toLocaleString()} rows`;
           } catch {}
         }
-        out += `- \`${r.name}\` (${r.type}${r.type === 'table' ? `, ${count.toLocaleString()} rows` : ''})\n`;
+        out += `- \`${r.name}\` (${r.type}${countSuffix})\n`;
       }
       db.close();
       return { text: out };
@@ -419,9 +429,53 @@ async function handleSchemaDump(args) {
   const target = resolved.target;
 
   if (isPostgres(target)) {
-    const listRes = await handleListTables(args);
-    if (listRes.error) return listRes;
-    return { text: listRes.text };
+    const client = new PgClient({ connectionString: target });
+    try {
+      await client.connect();
+      await client.query("SET statement_timeout = '5s'");
+      const res = await client.query(`
+        SELECT table_name, table_type
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+        ORDER BY table_name;
+      `);
+
+      if (res.rows.length === 0) {
+        await client.end();
+        return { text: `Connected to PostgreSQL, but no tables found in 'public' schema.` };
+      }
+
+      let out = `### PostgreSQL Schema (${res.rows.length} tables)\n`;
+      let totalBytes = Buffer.byteLength(out, 'utf8');
+
+      for (const r of res.rows) {
+        const colRes = await client.query(`
+          SELECT column_name, data_type, is_nullable, column_default
+          FROM information_schema.columns
+          WHERE table_schema = 'public' AND table_name = $1
+          ORDER BY ordinal_position;
+        `, [r.table_name]);
+
+        let tableDef = `\n#### \`${r.table_name}\` (${r.table_type.toLowerCase()})\n`;
+        for (const c of colRes.rows) {
+          tableDef += `- \`${c.column_name}\` ${c.data_type}${c.is_nullable === 'NO' ? ' NOT NULL' : ''}${c.column_default ? ' DEFAULT ' + c.column_default : ''}\n`;
+        }
+
+        const defBytes = Buffer.byteLength(tableDef, 'utf8');
+        if (totalBytes + defBytes > MAX_OUTPUT_BYTES) {
+          out += `\n> [!WARNING]\n> Schema dump truncated at ${Math.round(MAX_OUTPUT_BYTES / 1024)}KB. Use \`db_describe_table\` for individual table details.\n`;
+          break;
+        }
+        out += tableDef;
+        totalBytes += defBytes;
+      }
+
+      await client.end();
+      return { text: out };
+    } catch (err) {
+      try { await client.end(); } catch {}
+      return { error: `PostgreSQL error: ${err.message}` };
+    }
   } else {
     // SQLite: export CREATE TABLE statements
     const dbPath = path.resolve(process.cwd(), target);
@@ -430,7 +484,7 @@ async function handleSchemaDump(args) {
     try {
       const db = new sqlite.DatabaseSync(dbPath, { readOnly: true });
       const rows = db.prepare(`
-        SELECT sql
+        SELECT name, sql
         FROM sqlite_master
         WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
         ORDER BY name;
@@ -439,10 +493,28 @@ async function handleSchemaDump(args) {
 
       if (rows.length === 0) return { text: `No schema found in SQLite database.` };
 
-      const sqlDump = rows.map(r => r.sql + ';').join('\n\n');
-      return {
-        text: `### SQLite Database Schema (\`${path.basename(dbPath)}\`)\n\`\`\`sql\n${sqlDump}\n\`\`\``
-      };
+      const header = `### SQLite Database Schema (\`${path.basename(dbPath)}\` — ${rows.length} tables)\n\`\`\`sql\n`;
+      const footer = `\n\`\`\``;
+      let totalBytes = Buffer.byteLength(header, 'utf8') + Buffer.byteLength(footer, 'utf8');
+      let sqlDump = '';
+      let truncated = false;
+
+      for (const r of rows) {
+        const stmt = r.sql + ';\n\n';
+        const stmtBytes = Buffer.byteLength(stmt, 'utf8');
+        if (totalBytes + stmtBytes > MAX_OUTPUT_BYTES) {
+          truncated = true;
+          break;
+        }
+        sqlDump += stmt;
+        totalBytes += stmtBytes;
+      }
+
+      let text = `${header}${sqlDump.trimEnd()}${footer}`;
+      if (truncated) {
+        text += `\n\n> [!WARNING]\n> Schema dump truncated at ${Math.round(MAX_OUTPUT_BYTES / 1024)}KB (${rows.length} tables total). Use \`db_describe_table\` for individual table details.`;
+      }
+      return { text };
     } catch (err) {
       return { error: `SQLite error: ${err.message}` };
     }
@@ -458,11 +530,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: 'db_list_tables',
-      description: 'List all tables, views, and row counts in the active SQLite or PostgreSQL database. Automatically detects database file or DATABASE_URL if not provided.',
+      description: 'List all tables and views in the active SQLite or PostgreSQL database. Row counts are omitted by default for speed; pass include_counts=true to get exact counts. Automatically detects database file or DATABASE_URL if not provided.',
       inputSchema: {
         type: 'object',
         properties: {
-          connection: { type: 'string', description: 'Optional path to .db/.sqlite file or postgres:// connection URL' }
+          connection: { type: 'string', description: 'Optional path to .db/.sqlite file or postgres:// connection URL' },
+          include_counts: { type: 'boolean', description: 'Include exact row counts per table (default: false, can be slow on large databases)' }
         }
       }
     },
