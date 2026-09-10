@@ -166,7 +166,9 @@ Smart Paste adapts to what's on the clipboard:
 | File path(s) | uploaded, quoted remote paths typed into the prompt |
 
 The reverse works too: a remote yank (tmux / Neovim, via OSC 52) lands in your
-**local** clipboard.
+**local** clipboard. devbox also hides a tmux 3.4/3.5a quirk that flips mouse
+tracking and cursor visibility off and on while a side pane redraws, which
+otherwise breaks wheel scrolling inside a local tmux and flashes the cursor.
 
 ### Config (`~/.config/devbox/config.toml`)
 

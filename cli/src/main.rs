@@ -1,6 +1,7 @@
 mod clipboard;
 mod config;
 mod cwd;
+mod modeflap;
 mod osc52;
 mod paste;
 mod proxy;

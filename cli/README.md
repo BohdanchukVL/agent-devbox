@@ -58,6 +58,24 @@ local paths (ordinary text) passes through byte-exact.
 with a confirmation prompt even if `auto` is configured. False positive to know
 about: if you genuinely mean to paste a path *as text*, use `ask`/`off` or `Ctrl+G V`.
 
+### Terminal-mode flap suppression (tmux 3.4 / 3.5a)
+
+tmux 3.4 and 3.5a reset the client terminal whenever a *non-active* pane writes
+a multi-byte cell (a lazygit frame in a side pane does it several times a
+second): mouse tracking is switched off and the cursor shown, then both are
+restored a moment later. Inside a local tmux that gap lets a fast wheel scroll
+fall into the *local* copy-mode, and the cursor flashes in the input box. devbox
+holds the "off" half of such a pair for 50 ms and drops the pair when the "on"
+half follows, so the local terminal never sees the flap. A genuine mode change
+is passed on unchanged after the hold.
+
+If you run devbox inside a local tmux, this root binding is a good belt-and-braces
+addition (the remote tmux always keeps the client on the alternate screen):
+
+```tmux
+bind -n WheelUpPane if -F -t= "#{||:#{pane_in_mode},#{||:#{mouse_any_flag},#{alternate_on}}}" "send-keys -M" "copy-mode -e"
+```
+
 ### OSC 52 security
 
 Anything that writes to the remote PTY can emit OSC 52 — including `cat` of a hostile file (clipboard poisoning: a payload ending in `\n` executes on paste). Therefore:
