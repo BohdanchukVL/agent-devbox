@@ -9,14 +9,14 @@
 //! momentary "mouse off" lets a wheel event fall into the *local* copy-mode,
 //! and the "cursor shown" flashes the input cursor.
 //!
-//! The filter holds the first half of such a pair for [`HOLD`] and drops both
-//! halves when the second follows in time. Mode changes do not interact with
+//! The filter holds the first half of such a pair for [`HOLD`] and drops it
+//! when the second half follows in time; the second half is always passed on. Mode changes do not interact with
 //! drawing output, so delaying or dropping a cancelled pair is safe; a lone
 //! change is released unchanged after the hold expires.
 use std::time::{Duration, Instant};
 
 /// How long the first half of a pair may be held before it is passed on.
-pub const HOLD: Duration = Duration::from_millis(50);
+pub const HOLD: Duration = Duration::from_millis(300);
 
 /// (held sequence, sequence that cancels it)
 const PAIRS: &[(&[u8], &[u8])] = &[
@@ -77,12 +77,14 @@ impl FlapFilter {
                     }
                     self.pend.clear();
                 } else if let Some(i) = PAIRS.iter().position(|(_, c)| *c == self.pend.as_slice()) {
-                    match self.held.iter().position(|(h, _)| *h == i) {
-                        Some(pos) => {
-                            self.held.remove(pos); // cancelled pair: drop both halves
-                        }
-                        None => out.extend_from_slice(&self.pend),
+                    // The second half always goes through: re-enabling a mode that is
+                    // already on, or hiding an already hidden cursor, is a no-op, while
+                    // dropping it would lose the enable whenever the previous state was
+                    // off (tmux starts a client with "mouse off" and only then "mouse on").
+                    if let Some(pos) = self.held.iter().position(|(h, _)| *h == i) {
+                        self.held.remove(pos); // the held first half is what we drop
                     }
+                    out.extend_from_slice(&self.pend);
                     self.pend.clear();
                 }
                 // else: still a prefix, keep collecting
@@ -191,7 +193,10 @@ mod tests {
         input.extend_from_slice(ON);
         input.extend_from_slice(b"Z");
         let out = feed_all(&mut f, &[&input], now);
-        assert_eq!(out, b"A\x1b[1;1H\x1b[1;64rredrawZ");
+        let mut want = b"A\x1b[1;1H\x1b[1;64rredraw\x1b[?25l".to_vec();
+        want.extend_from_slice(ON);
+        want.extend_from_slice(b"Z");
+        assert_eq!(out, want);
         assert!(!f.has_pending());
     }
 
@@ -209,7 +214,7 @@ mod tests {
             ],
             now,
         );
-        assert_eq!(out, b"xdrawy");
+        assert_eq!(out, b"xdraw\x1b[?1000h\x1b[?1002hy");
         assert!(!f.has_pending());
     }
 
@@ -236,7 +241,7 @@ mod tests {
     fn cursor_show_hide_flap_is_dropped_but_plain_show_is_released() {
         let mut f = FlapFilter::new();
         let t0 = Instant::now();
-        assert_eq!(f.feed(b"\x1b[?25h..\x1b[?25l", t0), b"..");
+        assert_eq!(f.feed(b"\x1b[?25h..\x1b[?25l", t0), b"..\x1b[?25l");
         assert!(!f.has_pending());
         assert_eq!(f.feed(b"\x1b[?25h", t0), b"");
         assert_eq!(f.expire(t0 + HOLD), b"\x1b[?25h");
@@ -257,7 +262,7 @@ mod tests {
         let mut f = FlapFilter::new();
         // \e[?1005l shares the prefix \e[?100 with the tracked \e[?1000l
         let out = f.feed(b"\x1b[?1005l\x1b[?12l\x1b[?25h!\x1b[?25l", Instant::now());
-        assert_eq!(out, b"\x1b[?1005l\x1b[?12l!");
+        assert_eq!(out, b"\x1b[?1005l\x1b[?12l!\x1b[?25l");
     }
 
     #[test]
@@ -267,15 +272,21 @@ mod tests {
         let now = Instant::now();
         let out = f.feed(cycle, now);
         assert!(!f.has_pending(), "everything in the cycle should pair up");
-        for needle in [OFF, ON, b"\x1b[?25h".as_slice(), b"\x1b[?25l".as_slice()] {
+        for needle in [OFF, b"\x1b[?25h".as_slice()] {
             assert!(
                 !out.windows(needle.len()).any(|w| w == needle),
                 "leaked {needle:?}"
             );
         }
+        for needle in [ON, b"\x1b[?25l".as_slice()] {
+            assert!(
+                out.windows(needle.len()).any(|w| w == needle),
+                "second half must pass: {needle:?}"
+            );
+        }
         // everything else is preserved in order
         let mut expected = cycle.to_vec();
-        for needle in [OFF, ON, b"\x1b[?25h".as_slice(), b"\x1b[?25l".as_slice()] {
+        for needle in [OFF, b"\x1b[?25h".as_slice()] {
             let s = expected.clone();
             expected.clear();
             let mut i = 0;
@@ -289,5 +300,25 @@ mod tests {
             }
         }
         assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn startup_off_then_on_leaves_mouse_enabled() {
+        // tmux tty_start_tty: modes off first, enabled a little later
+        let mut f = FlapFilter::new();
+        let now = Instant::now();
+        let out = feed_all(
+            &mut f,
+            &[
+                b"\x1b[?1049h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1005l",
+                b"\x1b[H\x1b[J",
+                ON,
+            ],
+            now,
+        );
+        let mut want = b"\x1b[?1049h\x1b[?1005l\x1b[H\x1b[J".to_vec();
+        want.extend_from_slice(ON);
+        assert_eq!(out, want);
+        assert!(!f.has_pending());
     }
 }
