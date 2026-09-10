@@ -21,8 +21,9 @@ test('isLocalPostgresUrl differentiates local vs remote hosts', () => {
   assert.equal(isLocalPostgresUrl('postgres://localhost/db'), true);
   assert.equal(isLocalPostgresUrl('postgresql://127.0.0.1:5432/db'), true);
   assert.equal(isLocalPostgresUrl('postgresql://[::1]:5432/db'), true);
-  assert.equal(isLocalPostgresUrl('postgres://myhost.local:5432/db'), true);
 
+  // LAN / mDNS .local domains are NOT treated as localhost for security
+  assert.equal(isLocalPostgresUrl('postgres://myhost.local:5432/db'), false);
   assert.equal(isLocalPostgresUrl('postgres://ep-xyz.eu-central-1.aws.neon.tech/db'), false);
   assert.equal(isLocalPostgresUrl('postgresql://db.prod.company.com/db'), false);
   assert.equal(isLocalPostgresUrl('invalid-url'), false);
@@ -88,6 +89,19 @@ test('truncateCell respects MAX_CELL_BYTES limit and handles various types', () 
   const truncated = truncateCell(huge, 100);
   assert.equal(truncated.startsWith('A'.repeat(100)), true);
   assert.match(truncated, /\[truncated 4900 bytes\]/);
+
+  // Multi-byte Unicode & emoji truncation without broken characters
+  const ukr = 'Привіт світ! '.repeat(20);
+  const truncUkr = truncateCell(ukr, 50);
+  const ukrPrefix = truncUkr.split('…')[0];
+  assert.ok(Buffer.byteLength(ukrPrefix, 'utf8') <= 50);
+  assert.equal(ukrPrefix.includes('\uFFFD'), false);
+
+  const emojis = '🚀🎉🔥💡🛡️'.repeat(10);
+  const truncEmoji = truncateCell(emojis, 30);
+  const emojiPrefix = truncEmoji.split('…')[0];
+  assert.ok(Buffer.byteLength(emojiPrefix, 'utf8') <= 30);
+  assert.equal(emojiPrefix.includes('\uFFFD'), false);
 });
 
 test('formatMarkdownTable caps output bytes to prevent context blowout', () => {

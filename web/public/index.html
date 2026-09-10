@@ -292,7 +292,15 @@
   <script>
     const isMobile = window.innerWidth <= 768 || ('ontouchstart' in window);
     const clientType = isMobile ? 'mobile' : 'desktop';
-    const sessionName = clientType === 'mobile' ? 'main-mobile' : 'main-web';
+
+    // Per-tab linked session ID: keeps viewport, upload cwd, and zoom isolated per client/tab
+    let clientSessionId = sessionStorage.getItem('devbox_client_session');
+    if (!clientSessionId) {
+      const rand = Math.random().toString(36).slice(2, 8);
+      clientSessionId = `web-${clientType}-${rand}`;
+      sessionStorage.setItem('devbox_client_session', clientSessionId);
+    }
+    let sessionName = clientSessionId;
 
     const urlParams = new URLSearchParams(window.location.search);
     const authToken = urlParams.get('token') || sessionStorage.getItem('devbox_token') || '';
@@ -386,7 +394,7 @@
 
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       const tokenQuery = authToken ? `&token=${encodeURIComponent(authToken)}` : '';
-      const wsUrl = `${proto}//${location.host}/ws?client=${clientType}&cols=${term.cols}&rows=${term.rows}${tokenQuery}`;
+      const wsUrl = `${proto}//${location.host}/ws?client=${clientType}&session=${encodeURIComponent(sessionName)}&cols=${term.cols}&rows=${term.rows}${tokenQuery}`;
 
       ws = new WebSocket(wsUrl);
 
@@ -397,6 +405,18 @@
       };
 
       ws.onmessage = (event) => {
+        if (typeof event.data === 'string' && event.data.startsWith('{')) {
+          try {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'session' && msg.session) {
+              sessionName = msg.session;
+              sessionStorage.setItem('devbox_client_session', sessionName);
+              document.getElementById('session-name').textContent = sessionName;
+              statusDot.title = `Connected (${sessionName})`;
+              return;
+            }
+          } catch {}
+        }
         term.write(event.data);
       };
 
