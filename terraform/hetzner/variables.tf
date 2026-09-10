@@ -22,6 +22,12 @@ variable "disk_size" {
   default     = 80
 }
 
+variable "backups" {
+  description = "Enable Hetzner automatic backups for the server"
+  type        = bool
+  default     = true
+}
+
 variable "username" {
   description = "Unprivileged user created on the machine"
   type        = string
