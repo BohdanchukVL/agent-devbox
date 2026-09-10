@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 use crate::clipboard::{self, ClipContent};
 use crate::config::{Osc52Policy, PasteIntercept, Resolved, StatusMode};
 use crate::cwd::Osc7Tracker;
+use crate::modeflap::FlapFilter;
 use crate::osc52::Osc52Scanner;
 use crate::paste::{PasteEvent, PasteScanner};
 use crate::session::{self, Ssh};
@@ -89,6 +90,7 @@ pub async fn run(cfg: Resolved) -> Result<()> {
     let mut scanner = Osc52Scanner::new();
     let mut paste_scanner = PasteScanner::new();
     let mut cwd_tracker = Osc7Tracker::new();
+    let mut flap = FlapFilter::new();
     let mut state = InputState::Normal;
     // clipboard actions queued behind the "ask" confirmation prompt
     let mut pending: std::collections::VecDeque<PendingConfirm> = std::collections::VecDeque::new();
@@ -129,6 +131,14 @@ pub async fn run(cfg: Resolved) -> Result<()> {
             }
 
             // ── leader timeout: user meant the literal control byte ──
+            _ = tokio::time::sleep(flap.wait(std::time::Instant::now())), if flap.has_pending() => {
+                let late = flap.expire(std::time::Instant::now());
+                if !late.is_empty() {
+                    stdout.write_all(&late)?;
+                    stdout.flush()?;
+                }
+            }
+
             _ = tokio::time::sleep(leader_deadline), if matches!(state, InputState::Pending(_)) => {
                 state = InputState::Normal;
                 ssh.shell.data(&[cfg.leader][..]).await.ok();
@@ -148,7 +158,8 @@ pub async fn run(cfg: Resolved) -> Result<()> {
                         for payload in scanned.clipboard {
                             handle_osc52_write(&cfg, payload, &mut pending, &mut state, &mut stdout);
                         }
-                        stdout.write_all(&scanned.output)?;
+                        let visible = flap.feed(&scanned.output, std::time::Instant::now());
+                        stdout.write_all(&visible)?;
                         stdout.flush()?;
                     }
                     Some(ChannelMsg::ExtendedData { data, .. }) => {
@@ -156,6 +167,10 @@ pub async fn run(cfg: Resolved) -> Result<()> {
                         stdout.flush()?;
                     }
                     Some(ChannelMsg::ExitStatus { .. }) | Some(ChannelMsg::Close) | None => {
+                        let late = flap.flush();
+                        if !late.is_empty() {
+                            stdout.write_all(&late)?;
+                        }
                         status(&mut stdout, "remote session closed");
                         return finish(ssh).await;
                     }
