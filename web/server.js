@@ -109,6 +109,19 @@ function safeTokenCompare(input) {
   return crypto.timingSafeEqual(bufA, bufB);
 }
 
+function parseCookies(cookieHeader) {
+  const list = {};
+  if (!cookieHeader) return list;
+  cookieHeader.split(';').forEach(cookie => {
+    const parts = cookie.split('=');
+    const name = parts[0]?.trim();
+    if (!name) return;
+    const value = parts.slice(1).join('=').trim();
+    list[name] = decodeURIComponent(value);
+  });
+  return list;
+}
+
 function checkAuth(req, url) {
   const authHeader = req.headers['authorization'] || '';
   if (authHeader.startsWith('Bearer ')) {
@@ -118,6 +131,11 @@ function checkAuth(req, url) {
   }
   const customHeader = req.headers['x-devbox-token'] || '';
   if (safeTokenCompare(customHeader)) return true;
+
+  const cookies = parseCookies(req.headers['cookie']);
+  if (cookies['devbox_token'] && safeTokenCompare(cookies['devbox_token'])) {
+    return true;
+  }
 
   const tokenQuery = url.searchParams.get('token');
   if (tokenQuery && safeTokenCompare(tokenQuery)) return true;
@@ -131,6 +149,22 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${hostHeader}`);
   const pathname = url.pathname;
   const origin = req.headers.origin;
+
+  // Clean URL auth bootstrap: if visiting root with ?token=..., set HttpOnly SameSite cookie and redirect
+  if ((pathname === '/' || pathname === '/index.html') && url.searchParams.has('token')) {
+    const tokenParam = url.searchParams.get('token');
+    if (safeTokenCompare(tokenParam)) {
+      url.searchParams.delete('token');
+      const cleanSearch = url.searchParams.toString();
+      const redirectTarget = pathname + (cleanSearch ? `?${cleanSearch}` : '');
+      res.writeHead(302, {
+        'Set-Cookie': `devbox_token=${encodeURIComponent(AUTH_TOKEN)}; Path=/; HttpOnly; SameSite=Strict`,
+        'Location': redirectTarget
+      });
+      res.end();
+      return;
+    }
+  }
 
   // Origin check & CORS: restrict to same-origin / allowed hosts
   if (origin && isAllowedOrigin(origin, hostHeader, forwardedHost)) {
@@ -355,6 +389,7 @@ wss.on('connection', (ws, req) => {
   if (customSession && customSession !== 'main' && customSession !== 'main-web' && customSession !== 'main-mobile') {
     sessionName = sanitizeSessionName(customSession);
     ensureTmuxSession(sessionName);
+    isEphemeral = sessionName.startsWith('web-');
   } else {
     const clientId = crypto.randomBytes(4).toString('hex');
     sessionName = sanitizeSessionName(`web-${clientType}-${clientId}`);
@@ -363,6 +398,9 @@ wss.on('connection', (ws, req) => {
   }
 
   console.log(`[ws] client connected (${clientType}) -> session "${sessionName}" [${cols}x${rows}]`);
+
+  // Inform frontend of canonical session name so actions/uploads map to this client's linked session
+  ws.send(JSON.stringify({ type: 'session', session: sessionName }));
 
   const term = pty.spawn('tmux', ['attach-session', '-t', sessionName], {
     name: 'xterm-256color',

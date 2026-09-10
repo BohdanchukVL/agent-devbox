@@ -30,7 +30,7 @@ export function isLocalPostgresUrl(target) {
   try {
     const u = new URL(target);
     const h = (u.hostname || '').toLowerCase();
-    return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]' || h.endsWith('.local');
+    return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]';
   } catch {
     return false;
   }
@@ -120,9 +120,17 @@ export function resolveConnection(inputTarget) {
 export function truncateCell(val, maxCellBytes = MAX_CELL_BYTES) {
   if (val === null || val === undefined) return '`NULL`';
   let str = typeof val === 'object' ? JSON.stringify(val) : String(val);
-  const byteLen = Buffer.byteLength(str, 'utf8');
-  if (byteLen > maxCellBytes) {
-    str = str.slice(0, maxCellBytes) + `… [truncated ${byteLen - maxCellBytes} bytes]`;
+  const buf = Buffer.from(str, 'utf8');
+  if (buf.length > maxCellBytes) {
+    let end = maxCellBytes;
+    // In UTF-8, continuation bytes match 10xxxxxx (0x80 to 0xBF).
+    // Rewind past any cut continuation bytes to the beginning of the incomplete character.
+    while (end > 0 && (buf[end] & 0xC0) === 0x80) {
+      end--;
+    }
+    const sliced = buf.subarray(0, end).toString('utf8');
+    const truncatedBytes = buf.length - end;
+    str = sliced + `… [truncated ${truncatedBytes} bytes]`;
   }
   return str.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
 }
