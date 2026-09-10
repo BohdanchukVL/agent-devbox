@@ -3,7 +3,7 @@
 #   tmux-status cwd <dir>   → current dir, $HOME→~, long paths trimmed to …/parent/leaf
 #   tmux-status git <dir>   → branch name (+ '*' if the tree is dirty), else empty
 #   tmux-status ai <dir>    → [bar = 5h session limit used] context tokens, cost of the agent in the pane
-#   tmux-status load        → 1/5/15-minute load average
+#   tmux-status sys         → CPU % since the previous tick and RAM % in use (Linux /proc)
 render_bar() {
     _pct="$1"
     _width="${2:-${AI_BAR_WIDTH:-10}}"
@@ -45,6 +45,48 @@ fmt_tokens() {
         awk -v t="$_tok" 'BEGIN { printf "%dk", (t + 500) / 1000 }'
     else
         printf '%s' "$_tok"
+    fi
+}
+
+# CPU busy % between two ticks (state in a tmp file) and RAM % in use, Linux only.
+# Prints e.g. "#[..]CPU #[..]21% #[..]│ #[..]RAM #[..]91%"; nothing where /proc is missing.
+render_sys() {
+    [ -r /proc/stat ] && [ -r /proc/meminfo ] || return 0
+    local cpu_str="" ram_str="" prev_file="/tmp/.devbox-cpu-prev"
+    local user nice system idle iowait irq softirq steal rest
+    read -r _ user nice system idle iowait irq softirq steal rest < /proc/stat
+    local total=$(( user + nice + system + idle + iowait + irq + softirq + steal ))
+    local busy=$(( total - idle - iowait ))
+    if [ -r "$prev_file" ]; then
+        local ptotal pbusy
+        read -r ptotal pbusy < "$prev_file"
+        local dt=$(( total - ptotal )) db=$(( busy - pbusy ))
+        if [ "$dt" -gt 0 ] && [ "$db" -ge 0 ]; then
+            local cpu=$(( (db * 100 + dt / 2) / dt ))
+            [ "$cpu" -gt 100 ] && cpu=100
+            cpu_str="#[fg=colour214]CPU $(sys_value_color "$cpu")${cpu}%#[default]"
+        fi
+    fi
+    printf '%s %s\n' "$total" "$busy" > "$prev_file" 2>/dev/null
+    local mem_total mem_avail
+    mem_total=$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo)
+    mem_avail=$(awk '/^MemAvailable:/ {print $2; exit}' /proc/meminfo)
+    if [ "${mem_total:-0}" -gt 0 ] 2>/dev/null; then
+        local ram=$(( ((mem_total - mem_avail) * 100 + mem_total / 2) / mem_total ))
+        ram_str="#[fg=colour141]RAM $(sys_value_color "$ram")${ram}%#[default]"
+    fi
+    local out=""
+    [ -n "$cpu_str" ] && out="$cpu_str"
+    [ -n "$ram_str" ] && out="${out:+$out #[fg=colour241]│ }$ram_str"
+    printf '%s' "$out"
+}
+
+# value colour: normal, red and bold from 90%
+sys_value_color() {
+    if [ "$1" -ge 90 ] 2>/dev/null; then
+        printf '#[fg=colour203,bold]'
+    else
+        printf '#[fg=colour250]'
     fi
 }
 
@@ -413,10 +455,8 @@ EOF
         ;;
     esac
     ;;
-load)
-    # only surface load when the box is actually busy — idle zeros are noise
-    read -r one _ </proc/loadavg 2>/dev/null || exit 0
-    awk -v l="$one" 'BEGIN { exit !(l + 0 >= 1.0) }' && printf 'load %s' "$one"
+sys)
+    render_sys
     ;;
 all)
     dir="${2:-$PWD}"
@@ -435,14 +475,11 @@ all)
     # 3. ai segment
     ai_fmt=$(bash "$0" ai "$dir" "$pane_cmd" "$pane_pid" "$win_id")
 
-    # 4. load segment
-    load_fmt=""
-    read -r one _ </proc/loadavg 2>/dev/null || one=""
-    if [ -n "$one" ]; then
-        load_val=$(awk -v l="$one" 'BEGIN { if (l + 0 >= 1.0) printf " #[fg=colour214]load %s", l }')
-        load_fmt="$load_val"
-    fi
+    # 4. CPU / RAM segment (Linux only)
+    sys_fmt=""
+    sys_str=$(render_sys)
+    [ -n "$sys_str" ] && sys_fmt=" #[fg=colour241]│ $sys_str"
 
-    printf "#[fg=colour180,bold]%s%s%s%s " "$cwd_fmt" "$git_fmt" "$ai_fmt" "$load_fmt"
+    printf "#[fg=colour180,bold]%s%s%s%s " "$cwd_fmt" "$git_fmt" "$ai_fmt" "$sys_fmt"
     ;;
 esac
