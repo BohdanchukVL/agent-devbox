@@ -9,6 +9,8 @@ export DEBIAN_FRONTEND=noninteractive
 
 # shellcheck source=/dev/null
 . /etc/devbox/devbox.env
+# shellcheck source=/dev/null
+. /opt/devbox/versions.env 2>/dev/null || . /opt/devbox/provisioning/versions.env 2>/dev/null || true
 U="$DEVBOX_USER"
 H="/home/$U"
 log() { echo "[devbox $(date -u +%H:%M:%S)] $*"; }
@@ -39,12 +41,14 @@ if ! command -v yq >/dev/null 2>&1; then
 fi
 
 if ! command -v starship >/dev/null 2>&1; then
-  log "installing starship"
+  log "installing starship ${STARSHIP_VERSION:-latest}"
+  export STARSHIP_VERSION="${STARSHIP_VERSION:-}"
   curl -fsSL https://starship.rs/install.sh | sh -s -- -y -b /usr/local/bin || true
 fi
 
 if ! command -v zoxide >/dev/null 2>&1; then
-  log "installing zoxide (fallback)"
+  log "installing zoxide ${ZOXIDE_VERSION:-latest}"
+  export ZOXIDE_VERSION="${ZOXIDE_VERSION:-}"
   curl -fsSL https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh | sh -s -- --bin-dir /usr/local/bin || true
 fi
 

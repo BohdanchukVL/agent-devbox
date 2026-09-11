@@ -8,6 +8,8 @@ trap 'touch /etc/devbox/.failed 2>/dev/null || true' ERR
 
 # shellcheck source=/dev/null
 . /etc/devbox/devbox.env
+# shellcheck source=/dev/null
+. /opt/devbox/versions.env 2>/dev/null || . /opt/devbox/provisioning/versions.env 2>/dev/null || true
 U="$DEVBOX_USER"
 H="/home/$U"
 PREFIX="$H/.npm-global"
@@ -35,17 +37,17 @@ agent() {
 if [ "$INSTALL_CODEX" = "true" ]; then
   log "installing Codex CLI"
   which bwrap >/dev/null 2>&1 || apt-get install -y --no-install-recommends bubblewrap || true
-  agent @openai/codex
+  agent "@openai/codex@${CODEX_VERSION:-latest}"
 fi
 
 if [ "$INSTALL_CLAUDE" = "true" ]; then
   log "installing Claude Code"
-  agent @anthropic-ai/claude-code
+  agent "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION:-latest}"
 fi
 
 if [ "$INSTALL_OPENCODE" = "true" ]; then
   log "installing OpenCode"
-  agent opencode-ai
+  agent "opencode-ai@${OPENCODE_VERSION:-latest}"
 fi
 
 if [ "${INSTALL_ANTIGRAVITY:-false}" = "true" ]; then
@@ -58,7 +60,10 @@ if [ "${INSTALL_ANTIGRAVITY:-false}" = "true" ]; then
 fi
 
 log "installing code intelligence and MCP tools"
-agent @ast-grep/cli @notprolands/ast-grep-mcp @modelcontextprotocol/server-memory @playwright/mcp
+agent "@ast-grep/cli@${AST_GREP_CLI_VERSION:-latest}" \
+  "@notprolands/ast-grep-mcp@${AST_GREP_MCP_VERSION:-latest}" \
+  "@modelcontextprotocol/server-memory@${MCP_SERVER_MEMORY_VERSION:-latest}" \
+  "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION:-latest}"
 
 # Setup devbox-code-intel MCP server
 install -d -o "$U" -g "$U" "$H/.devbox/mcp/code-intel"

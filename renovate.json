@@ -1,0 +1,31 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "labels": ["dependencies"],
+  "schedule": ["before 8am on monday"],
+  "prConcurrentLimit": 5,
+  "customManagers": [
+    {
+      "customType": "regex",
+      "fileMatch": ["^provisioning/versions\\.env$"],
+      "matchStrings": [
+        "(?<depName>[A-Z_]+_VERSION)=(?<currentValue>\\S+)"
+      ],
+      "datasourceTemplate": "custom.versions-env",
+      "versioningTemplate": "semver"
+    }
+  ],
+  "packageRules": [
+    {
+      "matchPackagePatterns": ["*"],
+      "matchFileNames": ["provisioning/versions.env"],
+      "enabled": false,
+      "description": "versions.env is manually managed; Renovate only opens PRs for explicit entries when datasource is configured"
+    },
+    {
+      "matchDepTypes": ["action"],
+      "automerge": true,
+      "automergeType": "pr"
+    }
+  ]
+}

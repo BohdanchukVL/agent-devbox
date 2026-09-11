@@ -7,6 +7,8 @@ export DEBIAN_FRONTEND=noninteractive
 
 # shellcheck source=/dev/null
 . /etc/devbox/devbox.env
+# shellcheck source=/dev/null
+. /opt/devbox/versions.env 2>/dev/null || . /opt/devbox/provisioning/versions.env 2>/dev/null || true
 
 log() { echo "[devbox $(date -u +%H:%M:%S)] $*"; }
 
@@ -58,10 +60,10 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubc
 apt-get update -y
 apt-get install -y gh
 
-log "installing Node.js 22 + pnpm"
-curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+log "installing Node.js ${NODE_MAJOR:-22} + pnpm ${PNPM_VERSION:-latest}"
+curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR:-22}.x" | bash -
 apt-get install -y nodejs
-npm install -g pnpm
+npm install -g "pnpm@${PNPM_VERSION:-latest}"
 
 if [ "$INSTALL_DOCKER" = "true" ]; then
   log "installing Docker"
