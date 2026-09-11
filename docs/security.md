@@ -9,7 +9,7 @@ accordingly.
   `PermitRootLogin no` (drop-in `/etc/ssh/sshd_config.d/99-devbox.conf`).
 - **User privileges & Sudo model**:
   - Dev user (`dev` by default) has passwordless sudo (`NOPASSWD:ALL`) for developer workflow convenience (installing system packages, running Docker, system tuning). The account password itself is locked.
-  - *Threat model notice*: Because the dev user possesses sudo permissions, untrusted code execution containment does NOT rely on UNIX user boundaries alone; sandboxing and agent tool boundaries (such as Bubblewrap) provide isolation.
+  - *Threat model notice*: Because the dev user possesses sudo permissions, untrusted code execution containment does NOT rely on UNIX user boundaries alone. The primary isolation boundary is the disposable VM itself. Codex additionally runs inside a Bubblewrap sandbox; other agents rely on the VM boundary.
 - **Dynamic Firewall**:
   - By default without Tailscale, port 22 is open to the internet (`0.0.0.0/0`, `::/0`).
   - When `tailscale_authkey` is configured, **port 22 is automatically closed** to the public internet unless `ssh_allowed_cidrs` is explicitly provided.
@@ -25,7 +25,19 @@ accordingly.
 ## Agent blast radius & sandbox isolation
 
 - **Unprivileged agent execution**: AI agents run as `$DEVBOX_USER` inside `/workspace`.
-- **Codex Bubblewrap Sandbox**: Codex runs tool commands inside an unprivileged Bubblewrap (`bwrap`) container namespace.
+- **Per-agent sandbox configuration** (provisioned by `install-agents.sh`):
+  - **Codex**: runs in `full-auto` mode with Bubblewrap (`bwrap`) sandbox.
+    Networking is enabled (`enable_networking = true`) because the devbox is
+    disposable and agents need to install packages. Config at `~/.codex/config.toml`.
+  - **Claude Code**: `~/.claude/settings.json` grants broad file and command
+    permissions (`Bash(*)`, `Read(*)`, `Write(*)`, `WebFetch(*)`, `mcp__*`).
+    Claude does **not** use Bubblewrap; the disposable VM boundary is the
+    primary containment layer.
+  - **OpenCode / Antigravity**: no built-in sandbox; agent operates with the
+    dev user's full privileges. The VM boundary is the isolation layer.
+- **Metadata endpoint guard**: cloud metadata (`169.254.169.254`) is blocked
+  for non-root via iptables on `OUTPUT` and `DOCKER-USER` chains (IPv4 + IPv6),
+  persisted as a systemd oneshot service (`devbox-metadata-guard`).
 - **CLI Sensitive Path Intercept**:
   - The companion `devbox` CLI defaults to `paste_intercept = "ask"`.
   - Sensitive paths (`~/.ssh/*`, `~/.gnupg/*`, `~/.aws/*`, `~/.kube/*`, dot-directories, `id_*`, `*.pem`, `*.key`, `*.pfx`, `*.p12`, `.env*`) trigger an explicit interactive confirmation prompt even if `paste_intercept = "auto"`.

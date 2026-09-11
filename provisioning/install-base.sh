@@ -74,7 +74,7 @@ log "installing Tailscale"
 if curl -fsSL https://tailscale.com/install.sh | sh; then
   if [ -n "${TAILSCALE_AUTHKEY:-}" ]; then
     log "joining Tailscale network"
-    if ! tailscale up --authkey="${TAILSCALE_AUTHKEY}" --ssh --hostname="agent-devbox"; then
+    if ! tailscale up --authkey="${TAILSCALE_AUTHKEY}" --hostname="agent-devbox"; then
       log "WARNING: Tailscale join failed (check auth key)"
       touch /etc/devbox/.failed_tailscale
     fi

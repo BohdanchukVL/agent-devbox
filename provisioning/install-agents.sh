@@ -117,12 +117,35 @@ else
     "type": "command",
     "command": "$STATUSLINE_BIN",
     "refreshInterval": 30
+  },
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Read(*)",
+      "Write(*)",
+      "WebFetch(*)",
+      "mcp__*"
+    ],
+    "deny": []
   }
 }
 EOF
 fi
 chown "$U:$U" "$H/.claude/settings.json"
 rm -f /tmp/.claude-status.json 2>/dev/null || true
+
+# Codex sandbox config: full-auto with networking enabled (devbox is disposable)
+install -d -o "$U" -g "$U" "$H/.codex"
+cat > "$H/.codex/config.toml" <<'TOML'
+# Codex sandbox config for agent-devbox (disposable VM — full-auto is safe)
+model = "o4-mini"
+approval_policy = "full-auto"
+
+[sandbox]
+# Sandbox is mandatory in full-auto mode. Allow networking for installs.
+enable_networking = true
+TOML
+chown "$U:$U" "$H/.codex/config.toml"
 
 # Configure persistent memory storage (persisting across VM rebuilds if /workspace is mounted)
 if mountpoint -q /workspace 2>/dev/null; then

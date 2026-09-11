@@ -152,11 +152,34 @@ fi
 find /var/lib/cloud -name "user-data.txt" -exec shred -u {} + 2>/dev/null || true
 chmod 0600 /var/log/cloud-init*.log /var/log/devbox-*.log 2>/dev/null || true
 
-# Restrict cloud instance metadata endpoint (169.254.169.254) to root only
-# Prevents unprivileged/compromised agent sessions from querying instance metadata or tokens
-if command -v iptables >/dev/null 2>&1; then
-  iptables -C OUTPUT -m owner ! --uid-owner 0 -d 169.254.169.254 -j DROP 2>/dev/null || \
-    iptables -A OUTPUT -m owner ! --uid-owner 0 -d 169.254.169.254 -j DROP 2>/dev/null || true
+# Install and enable persistent metadata guard (F-05: OUTPUT + DOCKER-USER, IPv4 + IPv6)
+if [ -f /opt/devbox/devbox-metadata-guard.sh ]; then
+  install -m 0755 /opt/devbox/devbox-metadata-guard.sh /usr/local/bin/devbox-metadata-guard
+
+  cat > /etc/systemd/system/devbox-metadata-guard.service <<'UNIT'
+[Unit]
+Description=Block cloud metadata endpoint for non-root
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/devbox-metadata-guard
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+  systemctl daemon-reload
+  systemctl enable --now devbox-metadata-guard.service 2>/dev/null || \
+    /usr/local/bin/devbox-metadata-guard
+else
+  # Fallback: inline guard (same as before)
+  if command -v iptables >/dev/null 2>&1; then
+    iptables -C OUTPUT -m owner ! --uid-owner 0 -d 169.254.169.254 -j DROP 2>/dev/null || \
+      iptables -A OUTPUT -m owner ! --uid-owner 0 -d 169.254.169.254 -j DROP 2>/dev/null || true
+  fi
 fi
 
 # Execute readiness smoke tests before declaring completion
