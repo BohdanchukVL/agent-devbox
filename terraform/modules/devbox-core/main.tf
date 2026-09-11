@@ -1,5 +1,6 @@
-# devbox-core — shared user_data generation for all providers.
-# Each provider module calls this to get the cloud-init user_data string.
+terraform {
+  required_version = ">= 1.7.0"
+}
 
 variable "username" {
   type    = string
@@ -95,9 +96,28 @@ variable "ssh_allowed_cidrs" {
   default     = null
 }
 
+variable "agent_sandbox_strict" {
+  description = "Strict sandboxing for agent tools (true = restrict unsandboxed commands)"
+  type        = bool
+  default     = true
+}
+
+variable "release_channel" {
+  description = "Release channel for toolchains: 'stable' pins versions, 'latest' uses unpinned latest"
+  type        = string
+  default     = "stable"
+}
+
+variable "secrets_url" {
+  description = "Presigned URL for secrets.env payload (WP-3A)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 output "user_data" {
   description = "Rendered cloud-init user_data string"
-  value = templatefile("${path.module}/../../provisioning/cloud-init.yaml", {
+  value = templatefile("${path.module}/../../../provisioning/cloud-init.yaml", {
     username              = var.username
     ssh_public_key        = var.ssh_public_key
     runner_ssh_public_key = var.runner_ssh_public_key
@@ -109,7 +129,7 @@ output "user_data" {
     install_browser       = var.install_browser
     tailscale_authkey     = var.tailscale_authkey
     workspace_device      = var.workspace_device
-    bootstrap_script      = file("${path.module}/../../provisioning/bootstrap.sh")
+    bootstrap_script      = file("${path.module}/../../../provisioning/bootstrap.sh")
     git_repo              = var.git_repo
     git_ref               = var.git_ref
     git_token             = var.git_token
@@ -126,3 +146,29 @@ output "ssh_cidrs" {
     var.tailscale_authkey != "" ? [] : ["0.0.0.0/0", "::/0"]
   )
 }
+
+output "replace_triggers" {
+  description = "Trigger string that changes when server must be recreated due to configuration changes"
+  value = join(":", [
+    var.git_ref,
+    var.install_docker,
+    var.install_codex,
+    var.install_claude,
+    var.install_opencode,
+    var.install_antigravity,
+    var.install_browser,
+    var.username,
+    sha256(var.ssh_public_key),
+    sha256(var.tailscale_authkey),
+    sha256(var.web_token)
+  ])
+}
+
+output "labels" {
+  description = "Standard labels/tags for devbox resources across clouds"
+  value = {
+    managed_by = "agent-devbox"
+    user       = var.username
+  }
+}
+

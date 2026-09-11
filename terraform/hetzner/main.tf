@@ -72,11 +72,7 @@ resource "hcloud_volume" "workspace" {
 }
 
 resource "terraform_data" "payload" {
-  input = join(":", [
-    var.git_ref, var.server_type, var.install_docker, var.install_codex, var.install_claude,
-    var.install_opencode, var.install_antigravity, var.install_browser, var.username,
-    sha256(var.ssh_public_key), sha256(var.tailscale_authkey), sha256(var.web_token),
-  ])
+  input = "${var.server_type}:${module.core.replace_triggers}"
 }
 
 resource "hcloud_server" "this" {
@@ -86,6 +82,7 @@ resource "hcloud_server" "this" {
   image        = "ubuntu-24.04"
   ssh_keys     = [hcloud_ssh_key.this.id]
   firewall_ids = [hcloud_firewall.this.id]
+  labels       = module.core.labels
   user_data    = local.user_data
 
   lifecycle {

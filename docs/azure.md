@@ -68,3 +68,13 @@ audit and impossible to leak into other workloads.
 Connect exactly as in the workflow summary (`ssh dev@<ip>`). Destroy via
 *Actions → Destroy Azure environment* → type `destroy`. The tfstate resource
 group is kept (storage costs are negligible).
+
+## Verification & testing
+
+In CI, the Azure module is verified via `terraform fmt`, `terraform validate`, and
+`terraform test` using mock providers (`terraform/azure/tests/plan.tftest.hcl`).
+Tests assert that all `devbox.env` variables are generated, port 22 is closed
+when Tailscale is configured without fallback CIDRs, and configuration changes
+propagate to replacement triggers. Full live E2E runs on Hetzner; live Azure E2E
+can be enabled once Azure credentials or OIDC federations are configured.
+

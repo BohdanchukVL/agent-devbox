@@ -3,20 +3,20 @@ name: Deploy to Hetzner
 on:
   workflow_dispatch:
     inputs:
-      server_type:
-        description: Server size
-        required: true
-        type: choice
-        default: cx33
-        options: [cpx12, cx23, cx33, cx43, cx53, cpx32, cpx42]
       location:
-        description: Location
+        description: Datacenter location
         required: true
         type: choice
         default: nbg1
         options: [nbg1, fsn1, hel1]
+      server_type:
+        description: Machine size
+        required: true
+        type: choice
+        default: cx33
+        options: [cx23, cx33, cx43, cx53, cpx32, cpx42, cpx52]
       disk_size:
-        description: Workspace volume size in GB (0 = root disk only)
+        description: Size in GB for dedicated /workspace volume (0 = keep on root disk)
         required: true
         default: "80"
       install_docker:
@@ -48,7 +48,6 @@ on:
         required: false
         default: ""
 
-# One devbox per repo — serialize runs against the shared state.
 concurrency: hetzner-devbox
 
 permissions:
@@ -56,288 +55,17 @@ permissions:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
-    env:
-      HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
-      # Hetzner Object Storage credentials, consumed by both the AWS CLI
-      # (bootstrap) and the Terraform s3 backend.
-      AWS_ACCESS_KEY_ID: ${{ secrets.HETZNER_S3_ACCESS_KEY }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.HETZNER_S3_SECRET_KEY }}
-      TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
-      TF_VAR_tailscale_authkey: ${{ secrets.TAILSCALE_AUTHKEY || secrets.TAILSCALE_AUTH_KEY }}
-      # Object Storage location for the state bucket; independent from the
-      # server location so the state survives location changes.
-      STATE_LOCATION: ${{ vars.HETZNER_STATE_LOCATION || 'fsn1' }}
-      # Free-form input — pass via env, never interpolate into a run: script.
-      DISK_SIZE: ${{ inputs.disk_size }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Validate SSH public key
-        run: |
-          if ! ssh-keygen -l -f /dev/stdin <<< "$TF_VAR_ssh_public_key" >/dev/null 2>&1; then
-            echo '::error::SSH_PUBLIC_KEY is not a valid OpenSSH public key — expected one line ("ssh-ed25519 AAAA…" / "ssh-rsa AAAA…"), i.e. the contents of your .pub file, not the private key.'
-            exit 1
-          fi
-
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_wrapper: false
-
-      - name: Generate ephemeral SSH key for readiness gate
-        id: runner_key
-        run: |
-          ssh-keygen -t ed25519 -f /tmp/runner_key -N "" -q
-          echo "private_key_path=/tmp/runner_key" >> "$GITHUB_OUTPUT"
-          echo "public_key=$(cat /tmp/runner_key.pub)" >> "$GITHUB_OUTPUT"
-
-      - name: Detect runner public IP
-        id: runner_ip
-        run: |
-          RUNNER_IP=$(curl -fsSL --retry 3 https://checkip.amazonaws.com || curl -fsSL https://ifconfig.me)
-          echo "ip=$RUNNER_IP" >> "$GITHUB_OUTPUT"
-          echo "Runner public IP: $RUNNER_IP"
-
-      - name: Bootstrap state backend
-        id: state
-        run: |
-          OWNER=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
-          REPO_HASH=$(echo -n "$GITHUB_REPOSITORY" | sha256sum | cut -c1-8)
-          OLD_BUCKET="tfstate-agent-devbox-$OWNER"
-          NEW_BUCKET="tfstate-agent-devbox-$OWNER-$REPO_HASH"
-          ENDPOINT="https://$STATE_LOCATION.your-objectstorage.com"
-          # Hetzner requires the client region to match the endpoint location
-          if aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3api head-bucket --bucket "$OLD_BUCKET" 2>/dev/null; then
-            BUCKET="$OLD_BUCKET"
-          elif aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3api head-bucket --bucket "$NEW_BUCKET" 2>/dev/null; then
-            BUCKET="$NEW_BUCKET"
-          else
-            BUCKET="$NEW_BUCKET"
-            echo "Creating state bucket $BUCKET at $ENDPOINT"
-            aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3api create-bucket --bucket "$BUCKET" \
-              --create-bucket-configuration "LocationConstraint=$STATE_LOCATION"
-          fi
-          echo "bucket=$BUCKET"     >> "$GITHUB_OUTPUT"
-          echo "endpoint=$ENDPOINT" >> "$GITHUB_OUTPUT"
-
-      - name: Configure SSH ingress CIDRs (include runner IP for readiness gate)
-        env:
-          SSH_ALLOWED_CIDRS: ${{ inputs.ssh_allowed_cidrs }}
-          RUNNER_IP: ${{ steps.runner_ip.outputs.ip }}
-        run: |
-          # Start with user-provided CIDRs
-          if [ -n "$SSH_ALLOWED_CIDRS" ]; then
-            USER_CIDRS=$(echo "$SSH_ALLOWED_CIDRS" | tr ',' '\n' | sed 's/^[ \t]*//;s/[ \t]*$//' | jq -R . | jq -s .)
-          else
-            USER_CIDRS='[]'
-          fi
-          # Always add runner IP for readiness gate
-          DEPLOY_CIDRS=$(echo "$USER_CIDRS" | jq --arg rip "$RUNNER_IP/32" '. + [$rip] | unique' -c)
-          echo "TF_VAR_ssh_allowed_cidrs=$DEPLOY_CIDRS" >> "$GITHUB_ENV"
-          # Remember user-only CIDRs for cleanup pass
-          echo "USER_SSH_CIDRS=$(echo "$USER_CIDRS" | jq -c .)" >> "$GITHUB_ENV"
-
-      - name: Package and stage provisioning payload
-        id: payload
-        env:
-          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
-          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
-        run: |
-          # Tree hash of provisioning, mcp, and web is deterministic and works on shallow clones
-          PAYLOAD_REF=$(git rev-parse HEAD:provisioning HEAD:mcp HEAD:web | sha256sum | cut -c1-16)
-          echo "payload_ref=$PAYLOAD_REF" >> "$GITHUB_OUTPUT"
-
-          # Deterministic tarball (reproducible sorting, mtime, ownership, and gzip)
-          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - provisioning mcp web | gzip -n > /tmp/devbox-payload.tar.gz
-          PAYLOAD_SHA=$(sha256sum /tmp/devbox-payload.tar.gz | cut -d' ' -f1)
-          echo "sha256=$PAYLOAD_SHA" >> "$GITHUB_OUTPUT"
-
-          BUCKET="${{ steps.state.outputs.bucket }}"
-          ENDPOINT="${{ steps.state.outputs.endpoint }}"
-
-          # Upload payload and generate a fresh presigned URL for this deployment run
-          aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3 cp /tmp/devbox-payload.tar.gz "s3://$BUCKET/payloads/$PAYLOAD_REF.tar.gz"
-          TARBALL_URL=$(aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3 presign "s3://$BUCKET/payloads/$PAYLOAD_REF.tar.gz" --expires-in 3600)
-          echo "tarball_url=$TARBALL_URL" >> "$GITHUB_OUTPUT"
-
-      - name: Terraform init
-        working-directory: terraform/hetzner
-        run: |
-          terraform init \
-            -backend-config="bucket=${{ steps.state.outputs.bucket }}" \
-            -backend-config="key=hetzner/terraform.tfstate" \
-            -backend-config="region=$STATE_LOCATION" \
-            -backend-config="endpoints={s3=\"${{ steps.state.outputs.endpoint }}\"}" \
-            -backend-config="use_path_style=true" \
-            -backend-config="skip_credentials_validation=true" \
-            -backend-config="skip_region_validation=true" \
-            -backend-config="skip_requesting_account_id=true" \
-            -backend-config="skip_metadata_api_check=true" \
-            -backend-config="skip_s3_checksum=true"
-
-      - name: Terraform apply (with runner key for readiness gate)
-        working-directory: terraform/hetzner
-        env:
-          TF_VAR_runner_ssh_public_key: ${{ steps.runner_key.outputs.public_key }}
-        run: |
-          terraform apply -auto-approve \
-            -var="server_type=${{ inputs.server_type }}" \
-            -var="location=${{ inputs.location }}" \
-            -var="disk_size=$DISK_SIZE" \
-            -var="install_docker=${{ inputs.install_docker }}" \
-            -var="install_codex=${{ inputs.install_codex }}" \
-            -var="install_claude=${{ inputs.install_claude }}" \
-            -var="install_opencode=${{ inputs.install_opencode }}" \
-            -var="install_antigravity=${{ inputs.install_antigravity }}" \
-            -var="install_browser=${{ inputs.install_browser }}" \
-            -var="tarball_url=${{ steps.payload.outputs.tarball_url }}" \
-            -var="git_sha256=${{ steps.payload.outputs.sha256 }}" \
-            -var="git_ref=${{ steps.payload.outputs.payload_ref }}"
-
-      - name: Wait for provisioning
-        id: readiness
-        working-directory: terraform/hetzner
-        env:
-          SSH_KEY: ${{ steps.runner_key.outputs.private_key_path }}
-        run: |
-          IP=$(terraform output -raw public_ip)
-          USER=$(terraform output -raw username)
-          echo "ip=$IP" >> "$GITHUB_OUTPUT"
-          echo "user=$USER" >> "$GITHUB_OUTPUT"
-
-          SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o BatchMode=yes -i $SSH_KEY"
-
-          echo "Waiting for provisioning to complete on $IP (up to 15 min)..."
-          PROVISION_STATUS="timeout"
-          for i in $(seq 1 90); do
-            if ssh $SSH_OPTS "$USER@$IP" 'test -f /etc/devbox/.provisioned' 2>/dev/null; then
-              echo "✅ Provisioning completed successfully."
-              PROVISION_STATUS="success"
-              break
-            fi
-            if ssh $SSH_OPTS "$USER@$IP" 'test -f /etc/devbox/.failed' 2>/dev/null; then
-              echo "❌ Provisioning failed."
-              echo "::error::Provisioning failed — see logs below"
-              ssh $SSH_OPTS "$USER@$IP" 'cat /etc/devbox/.failed; echo "---"; tail -80 /var/log/devbox-install.log' 2>/dev/null || true
-              PROVISION_STATUS="failed"
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
-            fi
-            if [ "$((i % 6))" -eq 0 ]; then
-              echo "  ... still waiting ($((i * 10))s elapsed)"
-            fi
-            sleep 10
-          done
-
-          if [ "$PROVISION_STATUS" != "success" ]; then
-            echo "::error::Provisioning timed out after 15 minutes"
-            ssh $SSH_OPTS "$USER@$IP" 'tail -40 /var/log/devbox-install.log' 2>/dev/null || true
-            echo "status=timeout" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-
-          echo "status=success" >> "$GITHUB_OUTPUT"
-
-      - name: Run devbox-doctor
-        if: steps.readiness.outputs.status == 'success'
-        id: doctor
-        env:
-          SSH_KEY: ${{ steps.runner_key.outputs.private_key_path }}
-        run: |
-          IP="${{ steps.readiness.outputs.ip }}"
-          USER="${{ steps.readiness.outputs.user }}"
-          SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -i $SSH_KEY"
-          echo '```' > /tmp/doctor-output.txt
-          ssh $SSH_OPTS "$USER@$IP" 'sudo devbox-doctor --strict' 2>&1 | tee -a /tmp/doctor-output.txt
-          echo '```' >> /tmp/doctor-output.txt
-
-      - name: Cleanup runner access
-        if: always()
-        working-directory: terraform/hetzner
-        env:
-          SSH_ALLOWED_CIDRS: ${{ inputs.ssh_allowed_cidrs }}
-        run: |
-          # Re-apply with empty runner key and original CIDRs to restore firewall
-          if [ -n "$USER_SSH_CIDRS" ] && [ "$USER_SSH_CIDRS" != "[]" ]; then
-            export TF_VAR_ssh_allowed_cidrs="$USER_SSH_CIDRS"
-          else
-            unset TF_VAR_ssh_allowed_cidrs
-          fi
-          terraform apply -auto-approve \
-            -var="server_type=${{ inputs.server_type }}" \
-            -var="location=${{ inputs.location }}" \
-            -var="disk_size=$DISK_SIZE" \
-            -var="install_docker=${{ inputs.install_docker }}" \
-            -var="install_codex=${{ inputs.install_codex }}" \
-            -var="install_claude=${{ inputs.install_claude }}" \
-            -var="install_opencode=${{ inputs.install_opencode }}" \
-            -var="install_antigravity=${{ inputs.install_antigravity }}" \
-            -var="install_browser=${{ inputs.install_browser }}" \
-            -var="tarball_url=${{ steps.payload.outputs.tarball_url }}" \
-            -var="git_sha256=${{ steps.payload.outputs.sha256 }}" \
-            -var="git_ref=${{ steps.payload.outputs.payload_ref }}" \
-            -var="runner_ssh_public_key=" \
-            2>&1 || echo "::warning::Cleanup apply failed — runner IP may remain in firewall"
-
-          # Remove ephemeral runner SSH key from devbox authorized_keys
-          IP="${{ steps.readiness.outputs.ip }}"
-          USER="${{ steps.readiness.outputs.user }}"
-          SSH_KEY="${{ steps.runner_key.outputs.private_key_path }}"
-          RUNNER_PUB="${{ steps.runner_key.outputs.public_key }}"
-          if [ -n "$IP" ] && [ -n "$USER" ] && [ -f "$SSH_KEY" ]; then
-            ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -i "$SSH_KEY" "$USER@$IP" "sed -i '\|${RUNNER_PUB}|d' ~/.ssh/authorized_keys 2>/dev/null || true" 2>/dev/null || true
-          fi
-
-      - name: Deployment summary
-        if: always()
-        working-directory: terraform/hetzner
-        env:
-          SSH_ALLOWED_CIDRS: ${{ inputs.ssh_allowed_cidrs }}
-        run: |
-          IP=$(terraform output -raw public_ip 2>/dev/null || echo "unknown")
-          USER=$(terraform output -raw username 2>/dev/null || echo "dev")
-          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
-          ## ✅ Deployment completed
-
-          | | |
-          |---|---|
-          | **IP** | \`$IP\` |
-          | **User** | \`$USER\` |
-          | **Server** | ${{ inputs.server_type }} @ ${{ inputs.location }} |
-          | **Provisioning** | ${{ steps.readiness.outputs.status || 'skipped' }} |
-
-          Connect:
-
-          \`\`\`bash
-          ssh $USER@$IP
-          # Or via Tailscale (if auth key configured):
-          ssh $USER@agent-devbox
-          \`\`\`
-
-          Authenticate your agents:
-
-          \`\`\`bash
-          gh auth login
-          git config --global user.name  "Your Name"
-          git config --global user.email "you@example.com"
-          codex login --device-auth
-          claude
-          agy
-          \`\`\`
-          EOF
-
-          if [ -f /tmp/doctor-output.txt ]; then
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "### devbox-doctor" >> "$GITHUB_STEP_SUMMARY"
-            cat /tmp/doctor-output.txt >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-          if [ -n "$TF_VAR_tailscale_authkey" ] && [ -z "$SSH_ALLOWED_CIDRS" ]; then
-            cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
-
-          > [!WARNING]
-          > **Port 22 is closed to the public internet** because a Tailscale auth key was configured without fallback CIDRs (`ssh_allowed_cidrs`).
-          > Ensure your Tailnet node authenticates successfully. If Tailscale fails, this server cannot be reached via SSH.
-          EOF
-          fi
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      cloud: hetzner
+      location: ${{ inputs.location }}
+      server_type: ${{ inputs.server_type }}
+      disk_size: ${{ inputs.disk_size }}
+      install_docker: ${{ inputs.install_docker }}
+      install_codex: ${{ inputs.install_codex }}
+      install_claude: ${{ inputs.install_claude }}
+      install_opencode: ${{ inputs.install_opencode }}
+      install_antigravity: ${{ inputs.install_antigravity }}
+      install_browser: ${{ inputs.install_browser }}
+      ssh_allowed_cidrs: ${{ inputs.ssh_allowed_cidrs }}
+    secrets: inherit

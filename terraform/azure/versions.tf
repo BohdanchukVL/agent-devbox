@@ -1,5 +1,5 @@
 terraform {
-  required_version = ">= 1.6.0"
+  required_version = ">= 1.7.0"
 
   # Storage account/container are supplied by the workflow via
   # -backend-config; auth via ARM_ACCESS_KEY exported by the bootstrap step.

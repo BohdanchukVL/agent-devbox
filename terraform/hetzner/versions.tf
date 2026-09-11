@@ -1,5 +1,5 @@
 terraform {
-  required_version = ">= 1.6.0"
+  required_version = ">= 1.7.0"
 
   # Hetzner Object Storage (S3-compatible). All connection details are
   # supplied by the workflow via -backend-config; credentials come from

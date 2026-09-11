@@ -2,7 +2,7 @@ name: Lint and Validate
 
 on:
   push:
-    branches: [main, refactoring, security]
+    branches: [main]
   pull_request:
 
 permissions:
@@ -26,16 +26,19 @@ jobs:
         run: |
           terraform -chdir=terraform/hetzner init -backend=false
           terraform -chdir=terraform/hetzner validate
+          terraform -chdir=terraform/hetzner test
 
       - name: Validate AWS
         run: |
           terraform -chdir=terraform/aws init -backend=false
           terraform -chdir=terraform/aws validate
+          terraform -chdir=terraform/aws test
 
       - name: Validate Azure
         run: |
           terraform -chdir=terraform/azure init -backend=false
           terraform -chdir=terraform/azure validate
+          terraform -chdir=terraform/azure test
 
   workflows:
     name: GitHub Actions Workflow Lint (actionlint)

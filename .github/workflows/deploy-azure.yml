@@ -4,17 +4,21 @@ on:
   workflow_dispatch:
     inputs:
       location:
-        description: Region
+        description: Azure region
         required: true
         type: choice
         default: westeurope
-        options: [westeurope, northeurope, germanywestcentral, eastus]
+        options: [westeurope, northeurope, eastus, eastus2, westus2, centralus]
       vm_size:
         description: Machine size
         required: true
         type: choice
-        default: Standard_B2ms
-        options: [Standard_B2s, Standard_B2ms, Standard_D2s_v5, Standard_D4s_v5]
+        default: Standard_D2s_v5
+        options:
+          - Standard_B2s
+          - Standard_D2s_v5
+          - Standard_D4s_v5
+          - Standard_D8s_v5
       disk_size:
         description: OS disk size in GB
         required: true
@@ -51,169 +55,22 @@ on:
 concurrency: azure-devbox
 
 permissions:
-  id-token: write # OIDC auth mode
+  id-token: write
   contents: read
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
-    env:
-      TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
-      TF_VAR_tailscale_authkey: ${{ secrets.TAILSCALE_AUTHKEY || secrets.TAILSCALE_AUTH_KEY }}
-      HAS_OIDC: ${{ secrets.AZURE_CLIENT_ID != '' }}
-      # Free-form input — pass via env, never interpolate into a run: script.
-      DISK_SIZE: ${{ inputs.disk_size }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Validate SSH public key
-        run: |
-          if ! ssh-keygen -l -f /dev/stdin <<< "$TF_VAR_ssh_public_key" >/dev/null 2>&1; then
-            echo '::error::SSH_PUBLIC_KEY is not a valid OpenSSH public key — expected one line ("ssh-ed25519 AAAA…" / "ssh-rsa AAAA…"), i.e. the contents of your .pub file, not the private key.'
-            exit 1
-          fi
-
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_wrapper: false
-
-      - name: Azure login (OIDC)
-        if: env.HAS_OIDC == 'true'
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Azure login (service principal secret)
-        if: env.HAS_OIDC != 'true'
-        uses: azure/login@v2
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-
-      - name: Bootstrap state backend
-        id: state
-        run: |
-          SUB_ID=$(az account show --query id -o tsv)
-          echo "ARM_SUBSCRIPTION_ID=$SUB_ID" >> "$GITHUB_ENV"
-
-          RG="agent-devbox-tfstate"
-          SA="devboxtf$(echo -n "$GITHUB_REPOSITORY" | sha256sum | cut -c1-14)"
-          LOC="${{ inputs.location }}"
-
-          az group create --name "$RG" --location "$LOC" --output none
-          if ! az storage account show --name "$SA" --resource-group "$RG" --output none 2>/dev/null; then
-            echo "Creating state storage account $SA"
-            az storage account create --name "$SA" --resource-group "$RG" \
-              --location "$LOC" --sku Standard_LRS --kind StorageV2 \
-              --min-tls-version TLS1_2 --allow-blob-public-access false --output none
-          fi
-          KEY=$(az storage account keys list --account-name "$SA" --resource-group "$RG" --query '[0].value' -o tsv)
-          az storage container create --name tfstate --account-name "$SA" --account-key "$KEY" --output none
-          # Backend + azurerm auth for the following terraform steps.
-          echo "::add-mask::$KEY"
-          echo "ARM_ACCESS_KEY=$KEY" >> "$GITHUB_ENV"
-          echo "resource_group=$RG"  >> "$GITHUB_OUTPUT"
-          echo "storage_account=$SA" >> "$GITHUB_OUTPUT"
-
-      - name: Configure SSH ingress CIDRs
-        if: inputs.ssh_allowed_cidrs != ''
-        env:
-          SSH_ALLOWED_CIDRS: ${{ inputs.ssh_allowed_cidrs }}
-        run: |
-          JSON_CIDRS=$(echo "$SSH_ALLOWED_CIDRS" | tr ',' '\n' | sed 's/^[ \t]*//;s/[ \t]*$//' | jq -R . | jq -s . -c)
-          echo "TF_VAR_ssh_allowed_cidrs=$JSON_CIDRS" >> "$GITHUB_ENV"
-
-      - name: Package and stage provisioning payload
-        id: payload
-        run: |
-          # Tree hash of provisioning, mcp, and web is deterministic and works on shallow clones
-          PAYLOAD_REF=$(git rev-parse HEAD:provisioning HEAD:mcp HEAD:web | sha256sum | cut -c1-16)
-          echo "payload_ref=$PAYLOAD_REF" >> "$GITHUB_OUTPUT"
-
-          # Deterministic tarball (reproducible sorting, mtime, ownership, and gzip)
-          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - provisioning mcp web | gzip -n > /tmp/devbox-payload.tar.gz
-          PAYLOAD_SHA=$(sha256sum /tmp/devbox-payload.tar.gz | cut -d' ' -f1)
-          echo "sha256=$PAYLOAD_SHA" >> "$GITHUB_OUTPUT"
-
-          STORAGE_ACCOUNT="${{ steps.state.outputs.storage_account }}"
-
-          # Upload payload using account key and generate a fresh SAS URL for this deployment run
-          az storage blob upload --account-name "$STORAGE_ACCOUNT" --account-key "$ARM_ACCESS_KEY" -c "tfstate" -f /tmp/devbox-payload.tar.gz -n "payloads/$PAYLOAD_REF.tar.gz" --overwrite
-          END=$(date -u -d "+7 days" '+%Y-%m-%dT%H:%MZ' 2>/dev/null || date -u -v+7d '+%Y-%m-%dT%H:%MZ')
-          SAS=$(az storage blob generate-sas --account-name "$STORAGE_ACCOUNT" --account-key "$ARM_ACCESS_KEY" -c "tfstate" -n "payloads/$PAYLOAD_REF.tar.gz" --permissions r --expiry "$END" --https-only -o tsv)
-          TARBALL_URL="https://$STORAGE_ACCOUNT.blob.core.windows.net/tfstate/payloads/$PAYLOAD_REF.tar.gz?$SAS"
-          echo "tarball_url=$TARBALL_URL" >> "$GITHUB_OUTPUT"
-
-      - name: Terraform init
-        working-directory: terraform/azure
-        run: |
-          terraform init \
-            -backend-config="resource_group_name=${{ steps.state.outputs.resource_group }}" \
-            -backend-config="storage_account_name=${{ steps.state.outputs.storage_account }}" \
-            -backend-config="container_name=tfstate" \
-            -backend-config="key=azure/terraform.tfstate"
-
-      - name: Terraform apply
-        working-directory: terraform/azure
-        run: |
-          terraform apply -auto-approve \
-            -var="location=${{ inputs.location }}" \
-            -var="vm_size=${{ inputs.vm_size }}" \
-            -var="disk_size=$DISK_SIZE" \
-            -var="install_docker=${{ inputs.install_docker }}" \
-            -var="install_codex=${{ inputs.install_codex }}" \
-            -var="install_claude=${{ inputs.install_claude }}" \
-            -var="install_opencode=${{ inputs.install_opencode }}" \
-            -var="install_antigravity=${{ inputs.install_antigravity }}" \
-            -var="install_browser=${{ inputs.install_browser }}" \
-            -var="tarball_url=${{ steps.payload.outputs.tarball_url }}" \
-            -var="git_sha256=${{ steps.payload.outputs.sha256 }}" \
-            -var="git_ref=${{ steps.payload.outputs.payload_ref }}"
-
-      - name: Deployment summary
-        working-directory: terraform/azure
-        env:
-          SSH_ALLOWED_CIDRS: ${{ inputs.ssh_allowed_cidrs }}
-        run: |
-          IP=$(terraform output -raw public_ip)
-          USER=$(terraform output -raw username)
-          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
-          ## ✅ Deployment completed
-
-          | | |
-          |---|---|
-          | **IP** | \`$IP\` |
-          | **User** | \`$USER\` |
-          | **VM** | ${{ inputs.vm_size }} @ ${{ inputs.location }} |
-
-          Connect:
-
-          \`\`\`bash
-          ssh $USER@$IP
-          # Or via Tailscale (if auth key configured):
-          ssh $USER@agent-devbox
-          \`\`\`
-
-          Provisioning keeps running for a few minutes after boot — the MOTD
-          shows live status. Then authenticate your agents:
-
-          \`\`\`bash
-          gh auth login
-          git config --global user.name  "Your Name"
-          git config --global user.email "you@example.com"
-          codex login --device-auth
-          claude
-          agy
-          \`\`\`
-          EOF
-
-          if [ -n "$TF_VAR_tailscale_authkey" ] && [ -z "$SSH_ALLOWED_CIDRS" ]; then
-            cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
-
-          > [!WARNING]
-          > **Port 22 is closed to the public internet** because a Tailscale auth key was configured without fallback CIDRs (`ssh_allowed_cidrs`).
-          > Ensure your Tailnet node authenticates successfully. If Tailscale fails, this server cannot be reached via SSH.
-          EOF
-          fi
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      cloud: azure
+      location: ${{ inputs.location }}
+      server_type: ${{ inputs.vm_size }}
+      disk_size: ${{ inputs.disk_size }}
+      install_docker: ${{ inputs.install_docker }}
+      install_codex: ${{ inputs.install_codex }}
+      install_claude: ${{ inputs.install_claude }}
+      install_opencode: ${{ inputs.install_opencode }}
+      install_antigravity: ${{ inputs.install_antigravity }}
+      install_browser: ${{ inputs.install_browser }}
+      ssh_allowed_cidrs: ${{ inputs.ssh_allowed_cidrs }}
+    secrets: inherit

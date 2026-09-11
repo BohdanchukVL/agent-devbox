@@ -112,11 +112,7 @@ resource "azurerm_network_interface_security_group_association" "this" {
 }
 
 resource "terraform_data" "payload" {
-  input = join(":", [
-    var.git_ref, var.vm_size, var.install_docker, var.install_codex, var.install_claude,
-    var.install_opencode, var.install_antigravity, var.install_browser, var.username,
-    sha256(var.ssh_public_key), sha256(var.tailscale_authkey), sha256(var.web_token),
-  ])
+  input = "${var.vm_size}:${module.core.replace_triggers}"
 }
 
 resource "azurerm_linux_virtual_machine" "this" {

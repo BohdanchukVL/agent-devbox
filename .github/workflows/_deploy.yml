@@ -1,0 +1,475 @@
+name: Reusable Deploy
+
+on:
+  workflow_call:
+    inputs:
+      cloud:
+        description: Cloud provider (hetzner, aws, azure)
+        required: true
+        type: string
+      server_type:
+        description: Machine size
+        required: true
+        type: string
+      location:
+        description: Datacenter location / region
+        required: true
+        type: string
+      disk_size:
+        description: Disk size in GB
+        required: false
+        type: string
+        default: "80"
+      install_docker:
+        description: Install Docker
+        required: false
+        type: boolean
+        default: true
+      install_codex:
+        description: Install Codex CLI
+        required: false
+        type: boolean
+        default: true
+      install_claude:
+        description: Install Claude Code
+        required: false
+        type: boolean
+        default: true
+      install_opencode:
+        description: Install OpenCode
+        required: false
+        type: boolean
+        default: false
+      install_antigravity:
+        description: Install Google Antigravity CLI (agy)
+        required: false
+        type: boolean
+        default: true
+      install_browser:
+        description: Install headless browser (Playwright/Chromium)
+        required: false
+        type: boolean
+        default: true
+      ssh_allowed_cidrs:
+        description: Comma-separated CIDRs allowed for SSH fallback
+        required: false
+        type: string
+        default: ""
+      name_prefix:
+        description: Optional resource name override (e.g. for E2E)
+        required: false
+        type: string
+        default: "agent-devbox"
+      state_key:
+        description: Terraform state key path
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.HETZNER_S3_ACCESS_KEY || secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.HETZNER_S3_SECRET_KEY || secrets.AWS_SECRET_ACCESS_KEY }}
+      TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+      TF_VAR_tailscale_authkey: ${{ secrets.TAILSCALE_AUTHKEY || secrets.TAILSCALE_AUTH_KEY }}
+      STATE_LOCATION: ${{ vars.HETZNER_STATE_LOCATION || 'fsn1' }}
+      HAS_AWS_ROLE: ${{ secrets.AWS_ROLE_ARN != '' }}
+      HAS_AZURE_OIDC: ${{ secrets.AZURE_CLIENT_ID != '' }}
+      DISK_SIZE: ${{ inputs.disk_size }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate SSH public key
+        run: |
+          if ! ssh-keygen -l -f /dev/stdin <<< "$TF_VAR_ssh_public_key" >/dev/null 2>&1; then
+            echo '::error::SSH_PUBLIC_KEY is not a valid OpenSSH public key.'
+            exit 1
+          fi
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Generate ephemeral SSH key for readiness gate
+        id: runner_key
+        run: |
+          ssh-keygen -t ed25519 -f /tmp/runner_key -N "" -q
+          echo "private_key_path=/tmp/runner_key" >> "$GITHUB_OUTPUT"
+          echo "public_key=$(cat /tmp/runner_key.pub)" >> "$GITHUB_OUTPUT"
+
+      - name: Detect runner public IP
+        id: runner_ip
+        run: |
+          RUNNER_IP=$(curl -fsSL --retry 3 https://checkip.amazonaws.com || curl -fsSL https://ifconfig.me)
+          echo "ip=$RUNNER_IP" >> "$GITHUB_OUTPUT"
+
+      # ── AWS Authentication ──────────────────────────────────────────────────
+      - name: Configure AWS credentials (OIDC role)
+        if: inputs.cloud == 'aws' && env.HAS_AWS_ROLE == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ inputs.location }}
+
+      - name: Configure AWS credentials (access keys)
+        if: inputs.cloud == 'aws' && env.HAS_AWS_ROLE != 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ inputs.location }}
+
+      # ── Azure Authentication ────────────────────────────────────────────────
+      - name: Azure login (OIDC)
+        if: inputs.cloud == 'azure' && env.HAS_AZURE_OIDC == 'true'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Azure login (service principal secret)
+        if: inputs.cloud == 'azure' && env.HAS_AZURE_OIDC != 'true'
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # ── Bootstrap state backend ─────────────────────────────────────────────
+      - name: Bootstrap state backend (Hetzner)
+        if: inputs.cloud == 'hetzner'
+        id: state_hetzner
+        run: |
+          OWNER=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+          REPO_HASH=$(echo -n "$GITHUB_REPOSITORY" | sha256sum | cut -c1-8)
+          OLD_BUCKET="tfstate-agent-devbox-$OWNER"
+          NEW_BUCKET="tfstate-agent-devbox-$OWNER-$REPO_HASH"
+          ENDPOINT="https://$STATE_LOCATION.your-objectstorage.com"
+          if aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3api head-bucket --bucket "$OLD_BUCKET" 2>/dev/null; then
+            BUCKET="$OLD_BUCKET"
+          elif aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3api head-bucket --bucket "$NEW_BUCKET" 2>/dev/null; then
+            BUCKET="$NEW_BUCKET"
+          else
+            BUCKET="$NEW_BUCKET"
+            echo "Creating state bucket $BUCKET at $ENDPOINT"
+            aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3api create-bucket --bucket "$BUCKET" \
+              --create-bucket-configuration "LocationConstraint=$STATE_LOCATION"
+          fi
+          echo "bucket=$BUCKET" >> "$GITHUB_OUTPUT"
+          echo "endpoint=$ENDPOINT" >> "$GITHUB_OUTPUT"
+
+      - name: Bootstrap state backend (AWS)
+        if: inputs.cloud == 'aws'
+        id: state_aws
+        run: |
+          OWNER=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+          REPO_HASH=$(echo -n "$GITHUB_REPOSITORY" | sha256sum | cut -c1-8)
+          BUCKET="tfstate-agent-devbox-$OWNER-$REPO_HASH"
+          REGION="${{ inputs.location }}"
+          if ! aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+            echo "Creating state bucket $BUCKET in $REGION"
+            if [ "$REGION" = "us-east-1" ]; then
+              aws s3api create-bucket --bucket "$BUCKET" --region "$REGION"
+            else
+              aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" \
+                --create-bucket-configuration "LocationConstraint=$REGION"
+            fi
+            aws s3api put-bucket-versioning --bucket "$BUCKET" \
+              --versioning-configuration Status=Enabled
+            aws s3api put-public-access-block --bucket "$BUCKET" \
+              --public-access-block-configuration "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
+          fi
+          echo "bucket=$BUCKET" >> "$GITHUB_OUTPUT"
+
+      - name: Bootstrap state backend (Azure)
+        if: inputs.cloud == 'azure'
+        id: state_azure
+        run: |
+          SUB_ID=$(az account show --query id -o tsv)
+          echo "ARM_SUBSCRIPTION_ID=$SUB_ID" >> "$GITHUB_ENV"
+          RG="agent-devbox-tfstate"
+          SA="devboxtf$(echo -n "$GITHUB_REPOSITORY" | sha256sum | cut -c1-14)"
+          LOC="${{ inputs.location }}"
+          az group create --name "$RG" --location "$LOC" --output none
+          if ! az storage account show --name "$SA" --resource-group "$RG" --output none 2>/dev/null; then
+            echo "Creating state storage account $SA"
+            az storage account create --name "$SA" --resource-group "$RG" \
+              --location "$LOC" --sku Standard_LRS --kind StorageV2 \
+              --min-tls-version TLS1_2 --allow-blob-public-access false --output none
+          fi
+          KEY=$(az storage account keys list --account-name "$SA" --resource-group "$RG" --query '[0].value' -o tsv)
+          az storage container create --name tfstate --account-name "$SA" --account-key "$KEY" --output none
+          echo "::add-mask::$KEY"
+          echo "ARM_ACCESS_KEY=$KEY" >> "$GITHUB_ENV"
+          echo "resource_group=$RG" >> "$GITHUB_OUTPUT"
+          echo "storage_account=$SA" >> "$GITHUB_OUTPUT"
+
+      # ── Ingress CIDRs ───────────────────────────────────────────────────────
+      - name: Configure SSH ingress CIDRs (include runner IP for readiness gate)
+        env:
+          SSH_ALLOWED_CIDRS: ${{ inputs.ssh_allowed_cidrs }}
+          RUNNER_IP: ${{ steps.runner_ip.outputs.ip }}
+        run: |
+          if [ -n "$SSH_ALLOWED_CIDRS" ]; then
+            USER_CIDRS=$(echo "$SSH_ALLOWED_CIDRS" | tr ',' '\n' | sed 's/^[ \t]*//;s/[ \t]*$//' | jq -R . | jq -s .)
+          else
+            USER_CIDRS='[]'
+          fi
+          DEPLOY_CIDRS=$(echo "$USER_CIDRS" | jq --arg rip "$RUNNER_IP/32" '. + [$rip] | unique' -c)
+          echo "TF_VAR_ssh_allowed_cidrs=$DEPLOY_CIDRS" >> "$GITHUB_ENV"
+          echo "USER_SSH_CIDRS=$(echo "$USER_CIDRS" | jq -c .)" >> "$GITHUB_ENV"
+
+      # ── Package and stage payload ───────────────────────────────────────────
+      - name: Package and stage provisioning payload
+        id: payload
+        env:
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+        run: |
+          PAYLOAD_REF=$(git rev-parse HEAD:provisioning HEAD:mcp HEAD:web | sha256sum | cut -c1-16)
+          echo "payload_ref=$PAYLOAD_REF" >> "$GITHUB_OUTPUT"
+          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - provisioning mcp web | gzip -n > /tmp/devbox-payload.tar.gz
+          PAYLOAD_SHA=$(sha256sum /tmp/devbox-payload.tar.gz | cut -d' ' -f1)
+          echo "sha256=$PAYLOAD_SHA" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ inputs.cloud }}" = "hetzner" ]; then
+            BUCKET="${{ steps.state_hetzner.outputs.bucket }}"
+            ENDPOINT="${{ steps.state_hetzner.outputs.endpoint }}"
+            aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3 cp /tmp/devbox-payload.tar.gz "s3://$BUCKET/payloads/$PAYLOAD_REF.tar.gz"
+            TARBALL_URL=$(aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3 presign "s3://$BUCKET/payloads/$PAYLOAD_REF.tar.gz" --expires-in 3600)
+          elif [ "${{ inputs.cloud }}" = "aws" ]; then
+            BUCKET="${{ steps.state_aws.outputs.bucket }}"
+            REGION="${{ inputs.location }}"
+            aws s3 cp /tmp/devbox-payload.tar.gz "s3://$BUCKET/payloads/$PAYLOAD_REF.tar.gz" --region "$REGION"
+            TARBALL_URL=$(aws s3 presign "s3://$BUCKET/payloads/$PAYLOAD_REF.tar.gz" --expires-in 3600 --region "$REGION")
+          elif [ "${{ inputs.cloud }}" = "azure" ]; then
+            SA="${{ steps.state_azure.outputs.storage_account }}"
+            az storage blob upload --account-name "$SA" --account-key "$ARM_ACCESS_KEY" -c "tfstate" -f /tmp/devbox-payload.tar.gz -n "payloads/$PAYLOAD_REF.tar.gz" --overwrite
+            END=$(date -u -d "+7 days" '+%Y-%m-%dT%H:%MZ' 2>/dev/null || date -u -v+7d '+%Y-%m-%dT%H:%MZ')
+            SAS=$(az storage blob generate-sas --account-name "$SA" --account-key "$ARM_ACCESS_KEY" -c "tfstate" -n "payloads/$PAYLOAD_REF.tar.gz" --permissions r --expiry "$END" --https-only -o tsv)
+            TARBALL_URL="https://$SA.blob.core.windows.net/tfstate/payloads/$PAYLOAD_REF.tar.gz?$SAS"
+          fi
+          echo "tarball_url=$TARBALL_URL" >> "$GITHUB_OUTPUT"
+
+      # ── Terraform Init ──────────────────────────────────────────────────────
+      - name: Terraform init
+        working-directory: terraform/${{ inputs.cloud }}
+        run: |
+          KEY="${{ inputs.state_key != '' && inputs.state_key || format('{0}/terraform.tfstate', inputs.cloud) }}"
+          if [ "${{ inputs.cloud }}" = "hetzner" ]; then
+            terraform init \
+              -backend-config="bucket=${{ steps.state_hetzner.outputs.bucket }}" \
+              -backend-config="key=$KEY" \
+              -backend-config="region=$STATE_LOCATION" \
+              -backend-config="endpoints={s3=\"${{ steps.state_hetzner.outputs.endpoint }}\"}" \
+              -backend-config="use_path_style=true" \
+              -backend-config="skip_credentials_validation=true" \
+              -backend-config="skip_region_validation=true" \
+              -backend-config="skip_requesting_account_id=true" \
+              -backend-config="skip_metadata_api_check=true" \
+              -backend-config="skip_s3_checksum=true"
+          elif [ "${{ inputs.cloud }}" = "aws" ]; then
+            terraform init \
+              -backend-config="bucket=${{ steps.state_aws.outputs.bucket }}" \
+              -backend-config="key=$KEY" \
+              -backend-config="region=${{ inputs.location }}" \
+              -backend-config="use_lockfile=true"
+          elif [ "${{ inputs.cloud }}" = "azure" ]; then
+            terraform init \
+              -backend-config="resource_group_name=${{ steps.state_azure.outputs.resource_group }}" \
+              -backend-config="storage_account_name=${{ steps.state_azure.outputs.storage_account }}" \
+              -backend-config="container_name=tfstate" \
+              -backend-config="key=$KEY"
+          fi
+
+      # ── Terraform Apply (with runner key) ───────────────────────────────────
+      - name: Terraform apply (with runner key for readiness gate)
+        working-directory: terraform/${{ inputs.cloud }}
+        env:
+          TF_VAR_runner_ssh_public_key: ${{ steps.runner_key.outputs.public_key }}
+        run: |
+          COMMON_ARGS=(
+            -auto-approve
+            -var="name=${{ inputs.name_prefix }}"
+            -var="disk_size=$DISK_SIZE"
+            -var="install_docker=${{ inputs.install_docker }}"
+            -var="install_codex=${{ inputs.install_codex }}"
+            -var="install_claude=${{ inputs.install_claude }}"
+            -var="install_opencode=${{ inputs.install_opencode }}"
+            -var="install_antigravity=${{ inputs.install_antigravity }}"
+            -var="install_browser=${{ inputs.install_browser }}"
+            -var="tarball_url=${{ steps.payload.outputs.tarball_url }}"
+            -var="git_sha256=${{ steps.payload.outputs.sha256 }}"
+            -var="git_ref=${{ steps.payload.outputs.payload_ref }}"
+          )
+          if [ "${{ inputs.cloud }}" = "hetzner" ]; then
+            terraform apply "${COMMON_ARGS[@]}" \
+              -var="server_type=${{ inputs.server_type }}" \
+              -var="location=${{ inputs.location }}"
+          elif [ "${{ inputs.cloud }}" = "aws" ]; then
+            terraform apply "${COMMON_ARGS[@]}" \
+              -var="instance_type=${{ inputs.server_type }}" \
+              -var="region=${{ inputs.location }}"
+          elif [ "${{ inputs.cloud }}" = "azure" ]; then
+            terraform apply "${COMMON_ARGS[@]}" \
+              -var="vm_size=${{ inputs.server_type }}" \
+              -var="location=${{ inputs.location }}"
+          fi
+
+      # ── Readiness Gate ──────────────────────────────────────────────────────
+      - name: Wait for provisioning
+        id: readiness
+        working-directory: terraform/${{ inputs.cloud }}
+        env:
+          SSH_KEY: ${{ steps.runner_key.outputs.private_key_path }}
+        run: |
+          IP=$(terraform output -raw public_ip)
+          USER=$(terraform output -raw username)
+          echo "ip=$IP" >> "$GITHUB_OUTPUT"
+          echo "user=$USER" >> "$GITHUB_OUTPUT"
+
+          SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o BatchMode=yes -i "$SSH_KEY")
+
+          echo "Waiting for provisioning to complete on $IP (up to 15 min)..."
+          for i in $(seq 1 90); do
+            if ssh "${SSH_OPTS[@]}" "$USER@$IP" 'test -f /etc/devbox/.provisioned' 2>/dev/null; then
+              echo "✅ Provisioning completed successfully."
+              echo "status=success" >> "$GITHUB_OUTPUT"
+              break
+            fi
+            if ssh "${SSH_OPTS[@]}" "$USER@$IP" 'test -f /etc/devbox/.failed' 2>/dev/null; then
+              echo "❌ Provisioning failed."
+              echo "::error::Provisioning failed — see logs below"
+              ssh "${SSH_OPTS[@]}" "$USER@$IP" 'cat /etc/devbox/.failed; echo "---"; tail -80 /var/log/devbox-install.log' 2>/dev/null || true
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+            if [ "$((i % 6))" -eq 0 ]; then
+              echo "  ... still waiting ($((i * 10))s elapsed)"
+            fi
+            sleep 10
+          done
+
+          if [ "$(grep -c 'status=' "$GITHUB_OUTPUT" 2>/dev/null || echo 0)" -eq 0 ]; then
+            echo "::error::Provisioning timed out after 15 minutes"
+            ssh "${SSH_OPTS[@]}" "$USER@$IP" 'tail -40 /var/log/devbox-install.log' 2>/dev/null || true
+            echo "status=timeout" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      # ── Run devbox-doctor ───────────────────────────────────────────────────
+      - name: Run devbox-doctor
+        if: steps.readiness.outputs.status == 'success'
+        id: doctor
+        env:
+          SSH_KEY: ${{ steps.runner_key.outputs.private_key_path }}
+        run: |
+          IP="${{ steps.readiness.outputs.ip }}"
+          USER="${{ steps.readiness.outputs.user }}"
+          SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -i "$SSH_KEY")
+          echo '```' > /tmp/doctor-output.txt
+          ssh "${SSH_OPTS[@]}" "$USER@$IP" 'sudo devbox-doctor' 2>/dev/null | tee -a /tmp/doctor-output.txt || true
+          echo '```' >> /tmp/doctor-output.txt
+
+      # ── Cleanup runner access ───────────────────────────────────────────────
+      - name: Cleanup runner access
+        if: always()
+        working-directory: terraform/${{ inputs.cloud }}
+        env:
+          SSH_ALLOWED_CIDRS: ${{ inputs.ssh_allowed_cidrs }}
+        run: |
+          if [ -n "$USER_SSH_CIDRS" ] && [ "$USER_SSH_CIDRS" != "[]" ]; then
+            export TF_VAR_ssh_allowed_cidrs="$USER_SSH_CIDRS"
+          else
+            unset TF_VAR_ssh_allowed_cidrs
+          fi
+          COMMON_ARGS=(
+            -auto-approve
+            -var="name=${{ inputs.name_prefix }}"
+            -var="disk_size=$DISK_SIZE"
+            -var="install_docker=${{ inputs.install_docker }}"
+            -var="install_codex=${{ inputs.install_codex }}"
+            -var="install_claude=${{ inputs.install_claude }}"
+            -var="install_opencode=${{ inputs.install_opencode }}"
+            -var="install_antigravity=${{ inputs.install_antigravity }}"
+            -var="install_browser=${{ inputs.install_browser }}"
+            -var="tarball_url=${{ steps.payload.outputs.tarball_url }}"
+            -var="git_sha256=${{ steps.payload.outputs.sha256 }}"
+            -var="git_ref=${{ steps.payload.outputs.payload_ref }}"
+            -var="runner_ssh_public_key="
+          )
+          if [ "${{ inputs.cloud }}" = "hetzner" ]; then
+            terraform apply "${COMMON_ARGS[@]}" \
+              -var="server_type=${{ inputs.server_type }}" \
+              -var="location=${{ inputs.location }}" 2>&1 || true
+          elif [ "${{ inputs.cloud }}" = "aws" ]; then
+            terraform apply "${COMMON_ARGS[@]}" \
+              -var="instance_type=${{ inputs.server_type }}" \
+              -var="region=${{ inputs.location }}" 2>&1 || true
+          elif [ "${{ inputs.cloud }}" = "azure" ]; then
+            terraform apply "${COMMON_ARGS[@]}" \
+              -var="vm_size=${{ inputs.server_type }}" \
+              -var="location=${{ inputs.location }}" 2>&1 || true
+          fi
+
+      # ── Deployment Summary ──────────────────────────────────────────────────
+      - name: Deployment summary
+        if: always()
+        working-directory: terraform/${{ inputs.cloud }}
+        env:
+          SSH_ALLOWED_CIDRS: ${{ inputs.ssh_allowed_cidrs }}
+        run: |
+          IP=$(terraform output -raw public_ip 2>/dev/null || echo "unknown")
+          USER=$(terraform output -raw username 2>/dev/null || echo "dev")
+          {
+            cat <<EOF
+          ## ✅ Deployment completed (${{ inputs.cloud }})
+
+          | | |
+          |---|---|
+          | **IP** | \`$IP\` |
+          | **User** | \`$USER\` |
+          | **Server** | ${{ inputs.server_type }} @ ${{ inputs.location }} |
+          | **Provisioning** | ${{ steps.readiness.outputs.status || 'skipped' }} |
+
+          Connect:
+
+          \`\`\`bash
+          ssh $USER@$IP
+          # Or via Tailscale (if auth key configured):
+          ssh $USER@agent-devbox
+          \`\`\`
+
+          Authenticate your agents:
+
+          \`\`\`bash
+          gh auth login
+          git config --global user.name  "Your Name"
+          git config --global user.email "you@example.com"
+          codex login --device-auth
+          claude
+          agy
+          \`\`\`
+          EOF
+
+            if [ -f /tmp/doctor-output.txt ]; then
+              echo ""
+              echo "### devbox-doctor"
+              cat /tmp/doctor-output.txt
+            fi
+
+            if [ -n "$TF_VAR_tailscale_authkey" ] && [ -z "$SSH_ALLOWED_CIDRS" ]; then
+              cat <<'EOF'
+
+          > [!WARNING]
+          > **Port 22 is closed to the public internet** because a Tailscale auth key was configured without fallback CIDRs (`ssh_allowed_cidrs`).
+          EOF
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
