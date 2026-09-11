@@ -1,34 +1,35 @@
+module "core" {
+  source = "../modules/devbox-core"
+
+  username              = var.username
+  ssh_public_key        = var.ssh_public_key
+  runner_ssh_public_key = var.runner_ssh_public_key
+  install_docker        = var.install_docker
+  install_codex         = var.install_codex
+  install_claude        = var.install_claude
+  install_opencode      = var.install_opencode
+  install_antigravity   = var.install_antigravity
+  install_browser       = var.install_browser
+  tailscale_authkey     = var.tailscale_authkey
+  workspace_device      = ""
+  git_repo              = var.git_repo
+  git_ref               = var.git_ref
+  git_token             = var.git_token
+  git_sha256            = var.git_sha256
+  tarball_url           = var.tarball_url
+  web_token             = var.web_token
+  ssh_allowed_cidrs     = var.ssh_allowed_cidrs
+}
+
 locals {
   is_arm   = can(regex("^(t4g|c7g|m7g|r7g|c6g|m6g|r6g|a1)\\.", var.instance_type))
   ami_arch = local.is_arm ? "arm64" : "amd64"
 
-  ssh_cidrs = var.ssh_allowed_cidrs != null ? var.ssh_allowed_cidrs : (
-    var.tailscale_authkey != "" ? [] : ["0.0.0.0/0", "::/0"]
-  )
-
+  ssh_cidrs      = module.core.ssh_cidrs
   ssh_ipv4_cidrs = [for c in local.ssh_cidrs : c if !can(regex(":", c))]
   ssh_ipv6_cidrs = [for c in local.ssh_cidrs : c if can(regex(":", c))]
 
-  user_data = templatefile("${path.module}/../../provisioning/cloud-init.yaml", {
-    username               = var.username
-    ssh_public_key         = var.ssh_public_key
-    runner_ssh_public_key  = var.runner_ssh_public_key
-    install_docker         = var.install_docker
-    install_codex          = var.install_codex
-    install_claude         = var.install_claude
-    install_opencode       = var.install_opencode
-    install_antigravity    = var.install_antigravity
-    install_browser        = var.install_browser
-    tailscale_authkey      = var.tailscale_authkey
-    workspace_device       = ""
-    bootstrap_script       = file("${path.module}/../../provisioning/bootstrap.sh")
-    git_repo               = var.git_repo
-    git_ref                = var.git_ref
-    git_token              = var.git_token
-    git_sha256             = var.git_sha256
-    tarball_url            = var.tarball_url
-    web_token              = var.web_token
-  })
+  user_data = module.core.user_data
 }
 
 data "aws_ami" "ubuntu" {
