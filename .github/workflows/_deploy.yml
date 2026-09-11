@@ -232,6 +232,70 @@ jobs:
           echo "USER_SSH_CIDRS=$(echo "$USER_CIDRS" | jq -c .)" >> "$GITHUB_ENV"
 
       # ── Package and stage payload ───────────────────────────────────────────
+      # ── Tailscale OAuth Resolution (WP-3A) ──────────────────────────────────
+      - name: Resolve Tailscale auth key
+        id: tailscale_auth
+        run: |
+          if [ -n "${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}" ] && [ -n "${{ secrets.TAILSCALE_OAUTH_CLIENT_SECRET }}" ]; then
+            echo "Requesting ephemeral auth key via Tailscale OAuth API..."
+            TOKEN_RESP=$(curl -fsSL -d "client_id=${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}" \
+              -d "client_secret=${{ secrets.TAILSCALE_OAUTH_CLIENT_SECRET }}" \
+              "https://api.tailscale.com/api/v2/oauth/token" || echo "{}")
+            ACCESS_TOKEN=$(echo "$TOKEN_RESP" | jq -r '.access_token // empty')
+            if [ -n "$ACCESS_TOKEN" ]; then
+              KEY_RESP=$(curl -fsSL -u "$ACCESS_TOKEN:" \
+                -H "Content-Type: application/json" \
+                -d '{"capabilities":{"devices":{"create":{"reusable":false,"ephemeral":true,"preauthorized":true,"tags":["tag:devbox"]}}},"expirySeconds":900}' \
+                "https://api.tailscale.com/api/v2/tailnet/-/keys" || echo "{}")
+              TS_KEY=$(echo "$KEY_RESP" | jq -r '.key // empty')
+              if [ -n "$TS_KEY" ]; then
+                echo "::add-mask::$TS_KEY"
+                echo "key=$TS_KEY" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            fi
+            echo "Warning: Tailscale OAuth key generation failed, falling back to static key"
+          fi
+          STATIC_KEY="${{ secrets.TAILSCALE_AUTHKEY || secrets.TAILSCALE_AUTH_KEY }}"
+          echo "key=$STATIC_KEY" >> "$GITHUB_OUTPUT"
+
+      # ── Stage Secrets Payload (WP-3A) ───────────────────────────────────────
+      - name: Stage secrets payload
+        id: secrets_payload
+        env:
+          TS_KEY: ${{ steps.tailscale_auth.outputs.key }}
+          WEB_TOKEN: ${{ secrets.DEVBOX_WEB_TOKEN }}
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+        run: |
+          cat > /tmp/devbox-secrets.env <<EOF
+          TAILSCALE_AUTHKEY="$TS_KEY"
+          DEVBOX_WEB_TOKEN="$WEB_TOKEN"
+          EOF
+          RUN_ID="${{ github.run_id }}"
+          SECRETS_URL=""
+          if [ "${{ inputs.cloud }}" = "hetzner" ]; then
+            BUCKET="${{ steps.state_hetzner.outputs.bucket }}"
+            ENDPOINT="${{ steps.state_hetzner.outputs.endpoint }}"
+            aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3 cp /tmp/devbox-secrets.env "s3://$BUCKET/secrets/$RUN_ID.env"
+            SECRETS_URL=$(aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3 presign "s3://$BUCKET/secrets/$RUN_ID.env" --expires-in 900)
+          elif [ "${{ inputs.cloud }}" = "aws" ]; then
+            BUCKET="${{ steps.state_aws.outputs.bucket }}"
+            REGION="${{ inputs.location }}"
+            aws s3 cp /tmp/devbox-secrets.env "s3://$BUCKET/secrets/$RUN_ID.env" --region "$REGION"
+            SECRETS_URL=$(aws s3 presign "s3://$BUCKET/secrets/$RUN_ID.env" --expires-in 900 --region "$REGION")
+          elif [ "${{ inputs.cloud }}" = "azure" ]; then
+            SA="${{ steps.state_azure.outputs.storage_account }}"
+            az storage blob upload --account-name "$SA" --account-key "$ARM_ACCESS_KEY" -c "tfstate" -f /tmp/devbox-secrets.env -n "secrets/$RUN_ID.env" --overwrite
+            END=$(date -u -d "+15 minutes" '+%Y-%m-%dT%H:%MZ' 2>/dev/null || date -u -v+15m '+%Y-%m-%dT%H:%MZ')
+            SAS=$(az storage blob generate-sas --account-name "$SA" --account-key "$ARM_ACCESS_KEY" -c "tfstate" -n "secrets/$RUN_ID.env" --permissions r --expiry "$END" --https-only -o tsv)
+            SECRETS_URL="https://$SA.blob.core.windows.net/tfstate/secrets/$RUN_ID.env?$SAS"
+          fi
+          echo "::add-mask::$SECRETS_URL"
+          echo "secrets_url=$SECRETS_URL" >> "$GITHUB_OUTPUT"
+          rm -f /tmp/devbox-secrets.env
+
+      # ── Package and stage provisioning payload ──────────────────────────────
       - name: Package and stage provisioning payload
         id: payload
         env:
@@ -313,6 +377,7 @@ jobs:
             -var="tarball_url=${{ steps.payload.outputs.tarball_url }}"
             -var="git_sha256=${{ steps.payload.outputs.sha256 }}"
             -var="git_ref=${{ steps.payload.outputs.payload_ref }}"
+            -var="secrets_url=${{ steps.secrets_payload.outputs.secrets_url }}"
           )
           if [ "${{ inputs.cloud }}" = "hetzner" ]; then
             terraform apply "${COMMON_ARGS[@]}" \
@@ -413,6 +478,7 @@ jobs:
             -var="git_sha256=${{ steps.payload.outputs.sha256 }}"
             -var="git_ref=${{ steps.payload.outputs.payload_ref }}"
             -var="runner_ssh_public_key="
+            -var="secrets_url=${{ steps.secrets_payload.outputs.secrets_url }}"
           )
           if [ "${{ inputs.cloud }}" = "hetzner" ]; then
             terraform apply "${COMMON_ARGS[@]}" \
@@ -436,6 +502,24 @@ jobs:
           RUNNER_PUB="${{ steps.runner_key.outputs.public_key }}"
           if [ -n "$IP" ] && [ -n "$USER" ] && [ -f "$SSH_KEY" ]; then
             ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -i "$SSH_KEY" "$USER@$IP" "sed -i '\|${RUNNER_PUB}|d' ~/.ssh/authorized_keys 2>/dev/null || true" 2>/dev/null || true
+          fi
+
+      # ── Delete staged secrets object (WP-3A) ────────────────────────────────
+      - name: Cleanup staged secrets object
+        if: always()
+        run: |
+          RUN_ID="${{ github.run_id }}"
+          if [ "${{ inputs.cloud }}" = "hetzner" ]; then
+            BUCKET="${{ steps.state_hetzner.outputs.bucket }}"
+            ENDPOINT="${{ steps.state_hetzner.outputs.endpoint }}"
+            aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3 rm "s3://$BUCKET/secrets/$RUN_ID.env" 2>/dev/null || true
+          elif [ "${{ inputs.cloud }}" = "aws" ]; then
+            BUCKET="${{ steps.state_aws.outputs.bucket }}"
+            REGION="${{ inputs.location }}"
+            aws s3 rm "s3://$BUCKET/secrets/$RUN_ID.env" --region "$REGION" 2>/dev/null || true
+          elif [ "${{ inputs.cloud }}" = "azure" ]; then
+            SA="${{ steps.state_azure.outputs.storage_account }}"
+            az storage blob delete --account-name "$SA" --account-key "$ARM_ACCESS_KEY" -c "tfstate" -n "secrets/$RUN_ID.env" 2>/dev/null || true
           fi
 
       # ── Deployment Summary ──────────────────────────────────────────────────

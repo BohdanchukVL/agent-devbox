@@ -20,6 +20,9 @@ module "core" {
   tarball_url           = var.tarball_url
   web_token             = var.web_token
   ssh_allowed_cidrs     = var.ssh_allowed_cidrs
+  secrets_url           = var.secrets_url
+  agent_sandbox_strict  = var.agent_sandbox_strict
+  release_channel       = var.release_channel
 }
 
 locals {

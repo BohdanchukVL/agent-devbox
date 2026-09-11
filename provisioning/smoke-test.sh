@@ -172,9 +172,9 @@ if [ "${INSTALL_BROWSER:-true}" = "true" ]; then
   fi
 fi
 
-# 8. Hardening integrity checks (F-09)
+# 8. Hardening integrity checks (F-09, WP-3C)
 echo ""
-echo "--- Hardening checks ---"
+echo "--- Hardening & Integrity checks ---"
 
 # sudoers: user should have passwordless sudo and valid syntax
 if sudo -n -u "$DEVBOX_USER" sudo -n true 2>/dev/null; then
@@ -199,6 +199,13 @@ else
   fail "sshd PasswordAuthentication is not disabled (value: ${SSHD_PASSAUTH:-unknown})"
 fi
 
+# metadata guard service: systemd active check
+if systemctl is-active --quiet devbox-metadata-guard.service 2>/dev/null; then
+  ok "devbox-metadata-guard.service is active"
+else
+  fail "devbox-metadata-guard.service is not active"
+fi
+
 # metadata guard: iptables OUTPUT rule for 169.254.169.254
 if iptables -C OUTPUT -m owner ! --uid-owner 0 -d 169.254.169.254 -j DROP 2>/dev/null; then
   ok "Metadata guard (IPv4 OUTPUT) active"
@@ -206,6 +213,40 @@ elif iptables -C OUTPUT -d 169.254.169.254 -j DROP 2>/dev/null; then
   ok "Metadata guard (IPv4 OUTPUT) active"
 else
   fail "Metadata guard (IPv4 OUTPUT) not detected"
+fi
+
+# metadata guard: iptables DOCKER-USER rule
+if iptables -L DOCKER-USER >/dev/null 2>&1; then
+  if iptables -C DOCKER-USER -d 169.254.169.254 -j DROP 2>/dev/null; then
+    ok "Metadata guard (DOCKER-USER) active"
+  else
+    fail "Metadata guard (DOCKER-USER) not detected"
+  fi
+fi
+
+# system integrity check via sha256 manifest (WP-3C)
+if [ -f /etc/devbox/integrity.sha256 ]; then
+  if sha256sum -c --status /etc/devbox/integrity.sha256 2>/dev/null; then
+    ok "System integrity hash matches baseline (/etc/devbox/integrity.sha256)"
+  else
+    fail "System integrity hash MISMATCH — critical security files modified!"
+  fi
+fi
+
+# immutable attribute check (WP-3C)
+if command -v lsattr >/dev/null 2>&1; then
+  IMMUTABLE_OK=true
+  for f in /etc/sudoers.d/90-devbox /etc/ssh/sshd_config.d/99-devbox.conf /usr/local/bin/devbox-doctor; do
+    if [ -f "$f" ]; then
+      if ! lsattr "$f" 2>/dev/null | cut -d' ' -f1 | grep -q 'i'; then
+        IMMUTABLE_OK=false
+        warn "File $f is not marked immutable (+i)"
+      fi
+    fi
+  done
+  if [ "$IMMUTABLE_OK" = "true" ]; then
+    ok "Security configuration files marked immutable (+i)"
+  fi
 fi
 
 # cloud-init scrub: no secrets in devbox.env
@@ -216,6 +257,13 @@ if [ -f /etc/devbox/devbox.env ]; then
     ok "Secrets scrubbed from /etc/devbox/devbox.env"
   fi
 fi
+
+# Display recent sudo audit log entries (WP-3C)
+echo ""
+echo "--- Recent sudo audit commands ---"
+journalctl _COMM=sudo -n 10 --no-pager 2>/dev/null || \
+  grep 'COMMAND=' /var/log/auth.log 2>/dev/null | tail -10 || \
+  echo "(no sudo commands recorded yet)"
 
 # 9. Summary
 echo ""

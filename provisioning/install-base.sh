@@ -65,6 +65,14 @@ npm install -g pnpm
 
 if [ "$INSTALL_DOCKER" = "true" ]; then
   log "installing Docker"
+  mkdir -p /etc/docker
+  if [ ! -f /etc/docker/daemon.json ]; then
+    cat > /etc/docker/daemon.json <<'EOF'
+{
+  "no-new-privileges": true
+}
+EOF
+  fi
   env -u TAILSCALE_AUTHKEY -u PROVISIONING_TOKEN sh -c 'curl -fsSL https://get.docker.com | sh' || log "warning: docker installation failed (continuing)"
   usermod -aG docker "$DEVBOX_USER" 2>/dev/null || true
   systemctl enable --now docker 2>/dev/null || true
@@ -77,6 +85,9 @@ if curl -fsSL https://tailscale.com/install.sh | sh; then
     if ! tailscale up --authkey="${TAILSCALE_AUTHKEY}" --hostname="agent-devbox"; then
       log "WARNING: Tailscale join failed (check auth key)"
       touch /etc/devbox/.failed_tailscale
+    else
+      # Allow unprivileged dev user to manage tailscale serve without sudo (WP-3D)
+      tailscale set --operator="$DEVBOX_USER" 2>/dev/null || true
     fi
   fi
 else

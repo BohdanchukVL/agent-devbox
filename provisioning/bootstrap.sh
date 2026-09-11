@@ -26,8 +26,31 @@ PROVISIONING_REF="${PROVISIONING_REF:-main}"
 PROVISIONING_TOKEN="${PROVISIONING_TOKEN:-}"
 PROVISIONING_SHA256="${PROVISIONING_SHA256:-}"
 PROVISIONING_TARBALL_URL="${PROVISIONING_TARBALL_URL:-}"
+PROVISIONING_SECRETS_URL="${PROVISIONING_SECRETS_URL:-}"
 
 mkdir -p /opt/devbox /etc/devbox
+
+# Setup sudoers with audit and I/O logging (WP-3C)
+mkdir -p /var/log/sudo-io
+cat > /etc/sudoers.d/90-devbox <<EOF
+$DEVBOX_USER ALL=(ALL) NOPASSWD:ALL
+Defaults:$DEVBOX_USER log_input, log_output, use_pty, iolog_dir=/var/log/sudo-io
+EOF
+chmod 0440 /etc/sudoers.d/90-devbox
+
+# Pull secrets from presigned URL (WP-3A)
+if [ -n "$PROVISIONING_SECRETS_URL" ]; then
+  log "Fetching secrets payload from presigned URL..."
+  if curl -fsSL --retry 3 --retry-delay 2 "$PROVISIONING_SECRETS_URL" -o /etc/devbox/secrets.env; then
+    chmod 0600 /etc/devbox/secrets.env
+    # shellcheck source=/dev/null
+    . /etc/devbox/secrets.env
+    sed -i '/^PROVISIONING_SECRETS_URL=/d' /etc/devbox/devbox.env 2>/dev/null || true
+    unset PROVISIONING_SECRETS_URL
+  else
+    log "WARNING: Failed to fetch secrets from presigned URL (continuing with local env)"
+  fi
+fi
 
 # Download & unpack repository if scripts not already staged
 if [ ! -f /opt/devbox/install-base.sh ] && [ ! -f /opt/devbox/provisioning/install-base.sh ]; then
@@ -142,9 +165,13 @@ log "Executing install-shell.sh..."
 chown -R "$DEVBOX_USER:$DEVBOX_USER" "/home/$DEVBOX_USER" 2>/dev/null || true
 
 # Post-provisioning secret scrubbing: remove remaining auth keys from environment
+if [ -f /etc/devbox/secrets.env ]; then
+  shred -u /etc/devbox/secrets.env 2>/dev/null || rm -f /etc/devbox/secrets.env
+fi
 if [ -f /etc/devbox/devbox.env ]; then
   sed -i '/^TAILSCALE_AUTHKEY=/d' /etc/devbox/devbox.env 2>/dev/null || true
   sed -i '/^DEVBOX_WEB_TOKEN=/d' /etc/devbox/devbox.env 2>/dev/null || true
+  sed -i '/^PROVISIONING_SECRETS_URL=/d' /etc/devbox/devbox.env 2>/dev/null || true
   chmod 0600 /etc/devbox/devbox.env
 fi
 
@@ -159,8 +186,8 @@ if [ -f /opt/devbox/devbox-metadata-guard.sh ]; then
   cat > /etc/systemd/system/devbox-metadata-guard.service <<'UNIT'
 [Unit]
 Description=Block cloud metadata endpoint for non-root
-After=network.target docker.service
-Wants=docker.service
+Before=network.target
+After=network-pre.target
 
 [Service]
 Type=oneshot
@@ -171,16 +198,40 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 UNIT
 
+  # Docker drop-in: ensure metadata guard runs after Docker starts to protect DOCKER-USER chain
+  mkdir -p /etc/systemd/system/docker.service.d
+  cat > /etc/systemd/system/docker.service.d/devbox-guard.conf <<'UNIT'
+[Unit]
+Wants=devbox-metadata-guard.service
+After=devbox-metadata-guard.service
+UNIT
+
   systemctl daemon-reload
   systemctl enable --now devbox-metadata-guard.service 2>/dev/null || \
     /usr/local/bin/devbox-metadata-guard
 else
-  # Fallback: inline guard (same as before)
+  # Fallback: inline guard
   if command -v iptables >/dev/null 2>&1; then
     iptables -C OUTPUT -m owner ! --uid-owner 0 -d 169.254.169.254 -j DROP 2>/dev/null || \
       iptables -A OUTPUT -m owner ! --uid-owner 0 -d 169.254.169.254 -j DROP 2>/dev/null || true
   fi
 fi
+
+# Write system integrity baseline hash before making files immutable (WP-3C)
+sha256sum \
+  /etc/sudoers.d/90-devbox \
+  /etc/ssh/sshd_config.d/99-devbox.conf \
+  /etc/systemd/system/devbox-metadata-guard.service \
+  /usr/local/bin/devbox-doctor \
+  > /etc/devbox/integrity.sha256 2>/dev/null || true
+chmod 0644 /etc/devbox/integrity.sha256 2>/dev/null || true
+
+# Mark security configs immutable to prevent accidental tampering (WP-3C)
+chattr +i \
+  /etc/sudoers.d/90-devbox \
+  /etc/ssh/sshd_config.d/99-devbox.conf \
+  /etc/systemd/system/devbox-metadata-guard.service \
+  /usr/local/bin/devbox-doctor 2>/dev/null || true
 
 # Execute readiness smoke tests before declaring completion
 if [ -x /opt/devbox/smoke-test.sh ]; then

@@ -15,7 +15,6 @@ users:
   - name: ${username}
     shell: /bin/bash
     groups: [sudo]
-    sudo: "ALL=(ALL) NOPASSWD:ALL"
     lock_passwd: true
     ssh_authorized_keys:
       - ${ssh_public_key}
@@ -35,13 +34,17 @@ write_files:
       INSTALL_ANTIGRAVITY="${install_antigravity}"
       INSTALL_BROWSER="${install_browser}"
       WORKSPACE_DEVICE="${workspace_device}"
-      TAILSCALE_AUTHKEY="${tailscale_authkey}"
-      DEVBOX_WEB_TOKEN="${web_token}"
       PROVISIONING_REPO="${git_repo}"
       PROVISIONING_REF="${git_ref}"
-      PROVISIONING_TOKEN="${git_token}"
       PROVISIONING_SHA256="${git_sha256}"
       PROVISIONING_TARBALL_URL="${tarball_url}"
+      PROVISIONING_SECRETS_URL="${secrets_url}"
+      AGENT_SANDBOX_STRICT="${agent_sandbox_strict}"
+      DEVBOX_RELEASE_CHANNEL="${release_channel}"
+%{ if secrets_url == "" ~}
+      TAILSCALE_AUTHKEY="${tailscale_authkey}"
+      DEVBOX_WEB_TOKEN="${web_token}"
+%{ endif ~}
   - path: /opt/devbox/bootstrap.sh
     permissions: "0755"
     content: |

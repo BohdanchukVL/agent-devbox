@@ -142,6 +142,9 @@ output "user_data" {
     git_sha256            = var.git_sha256
     tarball_url           = var.tarball_url
     web_token             = var.web_token
+    secrets_url           = var.secrets_url
+    agent_sandbox_strict  = var.agent_sandbox_strict
+    release_channel       = var.release_channel
   })
   sensitive = true
 }

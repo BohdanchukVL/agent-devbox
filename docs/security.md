@@ -7,37 +7,43 @@ accordingly.
 
 - **SSH keys only** — `PasswordAuthentication no`, `KbdInteractiveAuthentication no`,
   `PermitRootLogin no` (drop-in `/etc/ssh/sshd_config.d/99-devbox.conf`).
-- **User privileges & Sudo model**:
-  - Dev user (`dev` by default) has passwordless sudo (`NOPASSWD:ALL`) for developer workflow convenience (installing system packages, running Docker, system tuning). The account password itself is locked.
-  - *Threat model notice*: Because the dev user possesses sudo permissions, untrusted code execution containment does NOT rely on UNIX user boundaries alone. The primary isolation boundary is the disposable VM itself. Codex additionally runs inside a Bubblewrap sandbox; other agents rely on the VM boundary.
+- **User privileges & Threat model (D1)**:
+  - The dev user (`dev` by default) has passwordless sudo (`NOPASSWD:ALL`) and belongs to the `docker` group for developer workflows.
+  - *Threat model reality*: `dev` is equivalent to root. UNIX user boundaries are NOT the primary security layer.
+  - The security boundary is established by:
+    1. **The disposable VM boundary**: The whole environment is created and destroyed on demand; no production keys live permanently on disk.
+    2. **Agent tool sandboxes**: Claude Code and Codex execute tool calls within sandboxes where sudo and host escape are restricted.
+    3. **Secrets minimization**: Sensitive credentials (`TAILSCALE_AUTHKEY`, `DEVBOX_WEB_TOKEN`) are delivered via short-lived presigned URLs, wiped from disk post-bootstrap, and never stored in cloud-init user-data caches.
+    4. **Network & Metadata isolation**: Outbound access to cloud metadata endpoints is blocked for non-root and all container traffic.
+    5. **Integrity locks**: Core security files (`sshd_config.d/99-devbox.conf`, `sudoers.d/90-devbox`, `devbox-metadata-guard.service`, `devbox-doctor`) are marked immutable (`chattr +i`) and verified against `/etc/devbox/integrity.sha256`.
+- **Sudo audit & I/O logging**:
+  - Sudo configuration lives in `/etc/sudoers.d/90-devbox` with `log_input, log_output, use_pty, iolog_dir=/var/log/sudo-io`. All sudo invocations and terminal sessions are recorded for forensic audit.
 - **Dynamic Firewall**:
   - By default without Tailscale, port 22 is open to the internet (`0.0.0.0/0`, `::/0`).
   - When `tailscale_authkey` is configured, **port 22 is automatically closed** to the public internet unless `ssh_allowed_cidrs` is explicitly provided.
   - Custom ingress CIDRs can be specified via `variable "ssh_allowed_cidrs"` across Hetzner, AWS, and Azure.
   - Tailscale WireGuard UDP port `41641` is permitted for direct peer-to-peer tunnels.
-- **AWS IMDSv2 Enforcement**:
-  - AWS EC2 instance metadata strictly enforces IMDSv2 (`http_tokens = "required"`) with a hop limit of `1`. This blocks SSRF attacks and prevents agents or Docker containers from extracting AWS instance IAM credentials.
-- **Credential Scrubbing & Cloud Metadata Realities**:
-  - `/etc/devbox/devbox.env` is restricted to permissions `0600` (owned by `root:root`).
-  - `TAILSCALE_AUTHKEY` is automatically scrubbed from `/etc/devbox/devbox.env` immediately after `tailscale up`. Sensitive `PROVISIONING_TOKEN` values are wiped from disk immediately after fetching the archive. Child install scripts run with these variables scrubbed from the environment.
-  - *Defense-in-depth note*: While on-disk files are scrubbed, cloud metadata services (e.g. Hetzner Cloud Metadata at `169.254.169.254`) and cloud-init local caches (`/var/lib/cloud/instances/*/user-data.txt`) may still retain the initial cloud-init payload. Therefore, scrubbing is defense-in-depth: the primary mitigation is generating **single-use (non-reusable)**, **ephemeral**, and **tagged** Tailscale auth keys (e.g. `tag:devbox`), ensuring any exposed key cannot be reused once registered.
+  - **Tailscale SSH is disabled**: `tailscale up` runs without `--ssh` so all incoming connections use standard OpenSSH and `authorized_keys`. `tailscale set --operator=dev` allows the unprivileged user to configure `tailscale serve` without sudo.
+- **AWS IMDSv2 & Metadata Guarding**:
+  - AWS EC2 instance metadata strictly enforces IMDSv2 (`http_tokens = "required"`) with a hop limit of `1`.
+  - In addition, the persistent `devbox-metadata-guard` service enforces iptables rules on `OUTPUT` (non-root) and `DOCKER-USER` (all container traffic) for IPv4 (`169.254.169.254`) and IPv6 (`fd00:ec2::254`). Docker cannot bypass this guard.
 
 ## Agent blast radius & sandbox isolation
 
 - **Unprivileged agent execution**: AI agents run as `$DEVBOX_USER` inside `/workspace`.
 - **Per-agent sandbox configuration** (provisioned by `install-agents.sh`):
-  - **Codex**: runs in `full-auto` mode with Bubblewrap (`bwrap`) sandbox.
-    Networking is enabled (`enable_networking = true`) because the devbox is
-    disposable and agents need to install packages. Config at `~/.codex/config.toml`.
-  - **Claude Code**: `~/.claude/settings.json` grants broad file and command
-    permissions (`Bash(*)`, `Read(*)`, `Write(*)`, `WebFetch(*)`, `mcp__*`).
-    Claude does **not** use Bubblewrap; the disposable VM boundary is the
-    primary containment layer.
-  - **OpenCode / Antigravity**: no built-in sandbox; agent operates with the
-    dev user's full privileges. The VM boundary is the isolation layer.
-- **Metadata endpoint guard**: cloud metadata (`169.254.169.254`) is blocked
-  for non-root via iptables on `OUTPUT` and `DOCKER-USER` chains (IPv4 + IPv6),
-  persisted as a systemd oneshot service (`devbox-metadata-guard`).
+  - **Claude Code**: configured in `~/.claude/settings.json` with strict sandboxing:
+    - `sandbox.enabled = true`
+    - `sandbox.failIfUnavailable = true`
+    - `sandbox.allowUnsandboxedCommands = false` (when `agent_sandbox_strict = true`)
+    - `sandbox.network.allowedDomains`: restricted to package registries and GitHub (`registry.npmjs.org`, `github.com`, `api.github.com`, `objects.githubusercontent.com`, `crates.io`, `static.crates.io`, `pypi.org`, `files.pythonhosted.org`, `proxy.golang.org`).
+    - Agents cannot execute `sudo` inside the sandbox. The human user can execute host commands outside the sandbox via the interactive `!` shell mode or direct terminal.
+  - **Codex**: runs in `sandbox_mode = "workspace-write"` with Bubblewrap (`bwrap`).
+    - Tool execution is containerized.
+    - Write access is constrained to `["/workspace"]`.
+    - Networking is enabled (`enable_networking = true`) for package management.
+  - **OpenCode / Antigravity**: have no native sandbox mechanisms and operate with the dev user's full privileges. Isolation relies on the disposable VM boundary.
+  - **What is NOT protected**: commands run through Claude Code's interactive `!` shell escape, tools invoked under OpenCode or Antigravity, and manual human shell commands.
 - **CLI Sensitive Path Intercept**:
   - The companion `devbox` CLI defaults to `paste_intercept = "ask"`.
   - Sensitive paths (`~/.ssh/*`, `~/.gnupg/*`, `~/.aws/*`, `~/.kube/*`, dot-directories, `id_*`, `*.pem`, `*.key`, `*.pfx`, `*.p12`, `.env*`) trigger an explicit interactive confirmation prompt even if `paste_intercept = "auto"`.

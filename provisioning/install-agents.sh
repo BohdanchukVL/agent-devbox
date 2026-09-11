@@ -107,42 +107,52 @@ fi
 # idle sessions current (seconds).
 STATUSLINE_BIN="$H/.devbox/bin/claude-statusline"
 install -d -o "$U" -g "$U" "$H/.claude"
-if [ -f "$H/.claude/settings.json" ] && jq -e . "$H/.claude/settings.json" >/dev/null 2>&1; then
-  jq --arg cmd "$STATUSLINE_BIN" '.statusLine = {"type": "command", "command": $cmd, "refreshInterval": 30}' \
-    "$H/.claude/settings.json" > "$H/.claude/settings.json.tmp" && mv "$H/.claude/settings.json.tmp" "$H/.claude/settings.json"
-else
-  cat > "$H/.claude/settings.json" <<EOF
+# Configure Claude Code settings (statusLine hook + strict sandbox WP-3B)
+STRICT_SANDBOX="${AGENT_SANDBOX_STRICT:-true}"
+ALLOW_UNSANDBOXED=$([ "$STRICT_SANDBOX" = "false" ] && echo "true" || echo "false")
+
+cat > "$H/.claude/settings.json" <<EOF
 {
   "statusLine": {
     "type": "command",
     "command": "$STATUSLINE_BIN",
     "refreshInterval": 30
   },
-  "permissions": {
-    "allow": [
-      "Bash(*)",
-      "Read(*)",
-      "Write(*)",
-      "WebFetch(*)",
-      "mcp__*"
-    ],
-    "deny": []
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": $ALLOW_UNSANDBOXED,
+    "network": {
+      "allowedDomains": [
+        "registry.npmjs.org",
+        "github.com",
+        "api.github.com",
+        "objects.githubusercontent.com",
+        "crates.io",
+        "static.crates.io",
+        "pypi.org",
+        "files.pythonhosted.org",
+        "proxy.golang.org"
+      ]
+    }
   }
 }
 EOF
-fi
 chown "$U:$U" "$H/.claude/settings.json"
 rm -f /tmp/.claude-status.json 2>/dev/null || true
 
-# Codex sandbox config: full-auto with networking enabled (devbox is disposable)
+# Codex sandbox config (WP-3B: workspace-write sandbox mode)
 install -d -o "$U" -g "$U" "$H/.codex"
 cat > "$H/.codex/config.toml" <<'TOML'
-# Codex sandbox config for agent-devbox (disposable VM — full-auto is safe)
+# Codex sandbox config for agent-devbox
 model = "o4-mini"
-approval_policy = "full-auto"
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+writable_roots = ["/workspace"]
 
 [sandbox]
-# Sandbox is mandatory in full-auto mode. Allow networking for installs.
 enable_networking = true
 TOML
 chown "$U:$U" "$H/.codex/config.toml"

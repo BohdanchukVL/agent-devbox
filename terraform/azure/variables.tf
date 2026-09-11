@@ -121,3 +121,23 @@ variable "runner_ssh_public_key" {
   type        = string
   default     = ""
 }
+
+variable "secrets_url" {
+  description = "Presigned URL for secrets.env payload (WP-3A)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "agent_sandbox_strict" {
+  description = "Enable strict sandboxing for AI agents (WP-3B)"
+  type        = bool
+  default     = true
+}
+
+variable "release_channel" {
+  description = "Release channel for toolchains: 'stable' or 'latest' (WP-4)"
+  type        = string
+  default     = "stable"
+}
+
