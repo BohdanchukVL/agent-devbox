@@ -13,7 +13,7 @@ const __dirname = path.dirname(__filename);
 
 const PORT = parseInt(process.env.PORT || '7681', 10);
 const HOST = process.env.HOST || '127.0.0.1';
-const AUTH_TOKEN = process.env.DEVBOX_WEB_TOKEN || process.env.AUTH_TOKEN || '';
+const AUTH_TOKEN = process.env.DEVBOX_WEB_TOKEN || process.env.AUTH_TOKEN || (process.env.DEVBOX_WEB_TEST ? 'test-secret-token' : '');
 const ALLOWED_ORIGIN = process.env.DEVBOX_ALLOWED_ORIGIN || '';
 
 if (!AUTH_TOKEN) {
@@ -353,6 +353,7 @@ const pingInterval = setInterval(() => {
     ws.ping();
   });
 }, 30000);
+pingInterval.unref();
 
 wss.on('close', () => {
   clearInterval(pingInterval);
@@ -460,6 +461,10 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-server.listen(PORT, HOST, () => {
-  console.log(`[devbox-web] server listening at http://${HOST}:${PORT}`);
-});
+export { server, wss, parseCookies, checkAuth, isAllowedOrigin, safeTokenCompare };
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+  server.listen(PORT, HOST, () => {
+    console.log(`[devbox-web] server listening at http://${HOST}:${PORT}`);
+  });
+}

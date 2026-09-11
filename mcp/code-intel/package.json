@@ -7,6 +7,9 @@
   "bin": {
     "devbox-code-intel": "./index.js"
   },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0"
   }

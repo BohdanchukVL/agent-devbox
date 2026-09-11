@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 // ── Ctags index cache ────────────────────────────────────────────────────
 const CACHE_DIR = path.join(os.homedir(), '.cache', 'devbox', 'code-intel');
@@ -512,5 +513,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   };
 });
 
-const transport = new StdioServerTransport();
-await server.connect(transport);
+export {
+  server,
+  cacheKeyForDir,
+  getCachePath,
+  getFreshnessKey,
+  loadCachedIndex,
+  rebuildIndexInBackground,
+  handleGetOutline,
+  handleFindDefinition,
+  handleFindReferences,
+  handleFindFiles,
+  CACHE_DIR
+};
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+}

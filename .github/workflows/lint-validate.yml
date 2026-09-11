@@ -96,6 +96,14 @@ jobs:
         run: |
           cd mcp/code-intel && npm audit --audit-level=high
 
+      - name: Run web tests
+        run: |
+          cd web && npm ci && npm test
+
       - name: Run mcp/db tests
         run: |
           cd mcp/db && npm ci && npm test
+
+      - name: Run mcp/code-intel tests
+        run: |
+          cd mcp/code-intel && npm ci && npm test
