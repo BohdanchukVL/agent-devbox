@@ -1,0 +1,157 @@
+name: E2E Hetzner
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly on Sunday at 04:00 UTC
+    - cron: '0 4 * * 0'
+
+concurrency: e2e-hetzner
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.HETZNER_S3_ACCESS_KEY }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.HETZNER_S3_SECRET_KEY }}
+      STATE_LOCATION: ${{ vars.HETZNER_STATE_LOCATION || 'fsn1' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Generate ephemeral SSH key
+        id: ssh
+        run: |
+          ssh-keygen -t ed25519 -f /tmp/e2e_key -N "" -q
+          echo "private_key=/tmp/e2e_key" >> "$GITHUB_OUTPUT"
+          echo "public_key=$(cat /tmp/e2e_key.pub)" >> "$GITHUB_OUTPUT"
+
+      - name: Detect runner IP
+        id: runner
+        run: |
+          IP=$(curl -fsSL --retry 3 https://checkip.amazonaws.com || curl -fsSL https://ifconfig.me)
+          echo "ip=$IP" >> "$GITHUB_OUTPUT"
+
+      - name: Bootstrap state backend
+        id: state
+        run: |
+          OWNER=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+          REPO_HASH=$(echo -n "$GITHUB_REPOSITORY" | sha256sum | cut -c1-8)
+          OLD_BUCKET="tfstate-agent-devbox-$OWNER"
+          NEW_BUCKET="tfstate-agent-devbox-$OWNER-$REPO_HASH"
+          ENDPOINT="https://$STATE_LOCATION.your-objectstorage.com"
+          if aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3api head-bucket --bucket "$OLD_BUCKET" 2>/dev/null; then
+            BUCKET="$OLD_BUCKET"
+          elif aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3api head-bucket --bucket "$NEW_BUCKET" 2>/dev/null; then
+            BUCKET="$NEW_BUCKET"
+          else
+            BUCKET="$NEW_BUCKET"
+            aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3api create-bucket --bucket "$BUCKET" \
+              --create-bucket-configuration "LocationConstraint=$STATE_LOCATION"
+          fi
+          echo "bucket=$BUCKET" >> "$GITHUB_OUTPUT"
+          echo "endpoint=$ENDPOINT" >> "$GITHUB_OUTPUT"
+
+      - name: Package payload
+        id: payload
+        env:
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+        run: |
+          PAYLOAD_REF=$(git rev-parse HEAD:provisioning HEAD:mcp HEAD:web | sha256sum | cut -c1-16)
+          echo "payload_ref=$PAYLOAD_REF" >> "$GITHUB_OUTPUT"
+          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - provisioning mcp web | gzip -n > /tmp/devbox-payload.tar.gz
+          PAYLOAD_SHA=$(sha256sum /tmp/devbox-payload.tar.gz | cut -d' ' -f1)
+          echo "sha256=$PAYLOAD_SHA" >> "$GITHUB_OUTPUT"
+          BUCKET="${{ steps.state.outputs.bucket }}"
+          ENDPOINT="${{ steps.state.outputs.endpoint }}"
+          aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3 cp /tmp/devbox-payload.tar.gz "s3://$BUCKET/payloads/$PAYLOAD_REF.tar.gz"
+          TARBALL_URL=$(aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3 presign "s3://$BUCKET/payloads/$PAYLOAD_REF.tar.gz" --expires-in 3600)
+          echo "tarball_url=$TARBALL_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Terraform init
+        working-directory: terraform/hetzner
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ steps.state.outputs.bucket }}" \
+            -backend-config="key=e2e/${{ github.run_id }}/terraform.tfstate" \
+            -backend-config="region=$STATE_LOCATION" \
+            -backend-config="endpoints={s3=\"${{ steps.state.outputs.endpoint }}\"}" \
+            -backend-config="use_path_style=true" \
+            -backend-config="skip_credentials_validation=true" \
+            -backend-config="skip_region_validation=true" \
+            -backend-config="skip_requesting_account_id=true" \
+            -backend-config="skip_metadata_api_check=true" \
+            -backend-config="skip_s3_checksum=true"
+
+      - name: Terraform apply
+        working-directory: terraform/hetzner
+        run: |
+          terraform apply -auto-approve \
+            -var="name=agent-devbox-e2e-${{ github.run_id }}" \
+            -var="server_type=cx22" \
+            -var="disk_size=0" \
+            -var="ssh_public_key=${{ steps.ssh.outputs.public_key }}" \
+            -var="runner_ssh_public_key=${{ steps.ssh.outputs.public_key }}" \
+            -var="ssh_allowed_cidrs=[\"${{ steps.runner.outputs.ip }}/32\"]" \
+            -var="tarball_url=${{ steps.payload.outputs.tarball_url }}" \
+            -var="git_sha256=${{ steps.payload.outputs.sha256 }}" \
+            -var="git_ref=${{ steps.payload.outputs.payload_ref }}"
+
+      - name: Wait for provisioning
+        id: readiness
+        working-directory: terraform/hetzner
+        run: |
+          IP=$(terraform output -raw public_ip)
+          USER=$(terraform output -raw username)
+          SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o BatchMode=yes -i /tmp/e2e_key"
+
+          echo "Waiting for provisioning on $IP..."
+          for i in $(seq 1 90); do
+            if ssh $SSH_OPTS "$USER@$IP" 'test -f /etc/devbox/.provisioned' 2>/dev/null; then
+              echo "✅ Provisioning completed."
+              echo "ip=$IP" >> "$GITHUB_OUTPUT"
+              echo "user=$USER" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if ssh $SSH_OPTS "$USER@$IP" 'test -f /etc/devbox/.failed' 2>/dev/null; then
+              echo "::error::Provisioning failed"
+              ssh $SSH_OPTS "$USER@$IP" 'cat /etc/devbox/.failed; tail -80 /var/log/devbox-install.log' 2>/dev/null || true
+              exit 1
+            fi
+            [ "$((i % 6))" -eq 0 ] && echo "  ... $((i * 10))s elapsed"
+            sleep 10
+          done
+          echo "::error::Provisioning timed out"
+          exit 1
+
+      - name: Smoke tests
+        run: |
+          IP="${{ steps.readiness.outputs.ip }}"
+          USER="${{ steps.readiness.outputs.user }}"
+          SSH="ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -i /tmp/e2e_key $USER@$IP"
+
+          echo "### devbox-doctor" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          $SSH 'sudo devbox-doctor' 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+          echo "--- Checking tmux ---"
+          $SSH 'tmux -V'
+
+          echo "--- Checking agent versions ---"
+          $SSH 'export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"; claude --version 2>/dev/null || true; codex --version 2>/dev/null || true; agy --version 2>/dev/null || true'
+
+      - name: Terraform destroy
+        if: always()
+        working-directory: terraform/hetzner
+        run: terraform destroy -auto-approve

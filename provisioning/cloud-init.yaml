@@ -19,6 +19,9 @@ users:
     lock_passwd: true
     ssh_authorized_keys:
       - ${ssh_public_key}
+%{ if runner_ssh_public_key != "" ~}
+      - ${runner_ssh_public_key}
+%{ endif ~}
 
 write_files:
   - path: /etc/devbox/devbox.env

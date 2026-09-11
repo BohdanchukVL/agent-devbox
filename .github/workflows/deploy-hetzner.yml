@@ -85,6 +85,20 @@ jobs:
         with:
           terraform_wrapper: false
 
+      - name: Generate ephemeral SSH key for readiness gate
+        id: runner_key
+        run: |
+          ssh-keygen -t ed25519 -f /tmp/runner_key -N "" -q
+          echo "private_key_path=/tmp/runner_key" >> "$GITHUB_OUTPUT"
+          echo "public_key=$(cat /tmp/runner_key.pub)" >> "$GITHUB_OUTPUT"
+
+      - name: Detect runner public IP
+        id: runner_ip
+        run: |
+          RUNNER_IP=$(curl -fsSL --retry 3 https://checkip.amazonaws.com || curl -fsSL https://ifconfig.me)
+          echo "ip=$RUNNER_IP" >> "$GITHUB_OUTPUT"
+          echo "Runner public IP: $RUNNER_IP"
+
       - name: Bootstrap state backend
         id: state
         run: |
@@ -107,13 +121,22 @@ jobs:
           echo "bucket=$BUCKET"     >> "$GITHUB_OUTPUT"
           echo "endpoint=$ENDPOINT" >> "$GITHUB_OUTPUT"
 
-      - name: Configure SSH ingress CIDRs
-        if: inputs.ssh_allowed_cidrs != ''
+      - name: Configure SSH ingress CIDRs (include runner IP for readiness gate)
         env:
           SSH_ALLOWED_CIDRS: ${{ inputs.ssh_allowed_cidrs }}
+          RUNNER_IP: ${{ steps.runner_ip.outputs.ip }}
         run: |
-          JSON_CIDRS=$(echo "$SSH_ALLOWED_CIDRS" | tr ',' '\n' | sed 's/^[ \t]*//;s/[ \t]*$//' | jq -R . | jq -s . -c)
-          echo "TF_VAR_ssh_allowed_cidrs=$JSON_CIDRS" >> "$GITHUB_ENV"
+          # Start with user-provided CIDRs
+          if [ -n "$SSH_ALLOWED_CIDRS" ]; then
+            USER_CIDRS=$(echo "$SSH_ALLOWED_CIDRS" | tr ',' '\n' | sed 's/^[ \t]*//;s/[ \t]*$//' | jq -R . | jq -s .)
+          else
+            USER_CIDRS='[]'
+          fi
+          # Always add runner IP for readiness gate
+          DEPLOY_CIDRS=$(echo "$USER_CIDRS" | jq --arg rip "$RUNNER_IP/32" '. + [$rip] | unique' -c)
+          echo "TF_VAR_ssh_allowed_cidrs=$DEPLOY_CIDRS" >> "$GITHUB_ENV"
+          # Remember user-only CIDRs for cleanup pass
+          echo "USER_SSH_CIDRS=$(echo "$USER_CIDRS" | jq -c .)" >> "$GITHUB_ENV"
 
       - name: Package and stage provisioning payload
         id: payload
@@ -153,8 +176,10 @@ jobs:
             -backend-config="skip_metadata_api_check=true" \
             -backend-config="skip_s3_checksum=true"
 
-      - name: Terraform apply
+      - name: Terraform apply (with runner key for readiness gate)
         working-directory: terraform/hetzner
+        env:
+          TF_VAR_runner_ssh_public_key: ${{ steps.runner_key.outputs.public_key }}
         run: |
           terraform apply -auto-approve \
             -var="server_type=${{ inputs.server_type }}" \
@@ -170,13 +195,95 @@ jobs:
             -var="git_sha256=${{ steps.payload.outputs.sha256 }}" \
             -var="git_ref=${{ steps.payload.outputs.payload_ref }}"
 
-      - name: Deployment summary
+      - name: Wait for provisioning
+        id: readiness
+        working-directory: terraform/hetzner
+        env:
+          SSH_KEY: ${{ steps.runner_key.outputs.private_key_path }}
+        run: |
+          IP=$(terraform output -raw public_ip)
+          USER=$(terraform output -raw username)
+          echo "ip=$IP" >> "$GITHUB_OUTPUT"
+          echo "user=$USER" >> "$GITHUB_OUTPUT"
+
+          SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o BatchMode=yes -i $SSH_KEY"
+
+          echo "Waiting for provisioning to complete on $IP (up to 15 min)..."
+          for i in $(seq 1 90); do
+            if ssh $SSH_OPTS "$USER@$IP" 'test -f /etc/devbox/.provisioned' 2>/dev/null; then
+              echo "✅ Provisioning completed successfully."
+              echo "status=success" >> "$GITHUB_OUTPUT"
+              break
+            fi
+            if ssh $SSH_OPTS "$USER@$IP" 'test -f /etc/devbox/.failed' 2>/dev/null; then
+              echo "❌ Provisioning failed."
+              echo "::error::Provisioning failed — see logs below"
+              ssh $SSH_OPTS "$USER@$IP" 'cat /etc/devbox/.failed; echo "---"; tail -80 /var/log/devbox-install.log' 2>/dev/null || true
+              echo "status=failed" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+            if [ "$((i % 6))" -eq 0 ]; then
+              echo "  ... still waiting ($((i * 10))s elapsed)"
+            fi
+            sleep 10
+          done
+
+          if [ "$(grep -c 'status=' "$GITHUB_OUTPUT" 2>/dev/null || echo 0)" -eq 0 ]; then
+            echo "::error::Provisioning timed out after 15 minutes"
+            ssh $SSH_OPTS "$USER@$IP" 'tail -40 /var/log/devbox-install.log' 2>/dev/null || true
+            echo "status=timeout" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Run devbox-doctor
+        if: steps.readiness.outputs.status == 'success'
+        id: doctor
+        env:
+          SSH_KEY: ${{ steps.runner_key.outputs.private_key_path }}
+        run: |
+          IP="${{ steps.readiness.outputs.ip }}"
+          USER="${{ steps.readiness.outputs.user }}"
+          SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -i $SSH_KEY"
+          echo '```' > /tmp/doctor-output.txt
+          ssh $SSH_OPTS "$USER@$IP" 'sudo devbox-doctor' 2>/dev/null | tee -a /tmp/doctor-output.txt || true
+          echo '```' >> /tmp/doctor-output.txt
+
+      - name: Cleanup runner access
+        if: always()
         working-directory: terraform/hetzner
         env:
           SSH_ALLOWED_CIDRS: ${{ inputs.ssh_allowed_cidrs }}
         run: |
-          IP=$(terraform output -raw public_ip)
-          USER=$(terraform output -raw username)
+          # Re-apply with empty runner key and original CIDRs to restore firewall
+          if [ -n "$USER_SSH_CIDRS" ] && [ "$USER_SSH_CIDRS" != "[]" ]; then
+            export TF_VAR_ssh_allowed_cidrs="$USER_SSH_CIDRS"
+          else
+            unset TF_VAR_ssh_allowed_cidrs
+          fi
+          terraform apply -auto-approve \
+            -var="server_type=${{ inputs.server_type }}" \
+            -var="location=${{ inputs.location }}" \
+            -var="disk_size=$DISK_SIZE" \
+            -var="install_docker=${{ inputs.install_docker }}" \
+            -var="install_codex=${{ inputs.install_codex }}" \
+            -var="install_claude=${{ inputs.install_claude }}" \
+            -var="install_opencode=${{ inputs.install_opencode }}" \
+            -var="install_antigravity=${{ inputs.install_antigravity }}" \
+            -var="install_browser=${{ inputs.install_browser }}" \
+            -var="tarball_url=${{ steps.payload.outputs.tarball_url }}" \
+            -var="git_sha256=${{ steps.payload.outputs.sha256 }}" \
+            -var="git_ref=${{ steps.payload.outputs.payload_ref }}" \
+            -var="runner_ssh_public_key=" \
+            2>&1 || echo "::warning::Cleanup apply failed — runner IP may remain in firewall"
+
+      - name: Deployment summary
+        if: always()
+        working-directory: terraform/hetzner
+        env:
+          SSH_ALLOWED_CIDRS: ${{ inputs.ssh_allowed_cidrs }}
+        run: |
+          IP=$(terraform output -raw public_ip 2>/dev/null || echo "unknown")
+          USER=$(terraform output -raw username 2>/dev/null || echo "dev")
           cat >> "$GITHUB_STEP_SUMMARY" <<EOF
           ## ✅ Deployment completed
 
@@ -185,6 +292,7 @@ jobs:
           | **IP** | \`$IP\` |
           | **User** | \`$USER\` |
           | **Server** | ${{ inputs.server_type }} @ ${{ inputs.location }} |
+          | **Provisioning** | ${{ steps.readiness.outputs.status || 'skipped' }} |
 
           Connect:
 
@@ -194,8 +302,7 @@ jobs:
           ssh $USER@agent-devbox
           \`\`\`
 
-          Provisioning keeps running for a few minutes after boot — the MOTD
-          shows live status. Then authenticate your agents:
+          Authenticate your agents:
 
           \`\`\`bash
           gh auth login
@@ -207,6 +314,12 @@ jobs:
           \`\`\`
           EOF
 
+          if [ -f /tmp/doctor-output.txt ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "### devbox-doctor" >> "$GITHUB_STEP_SUMMARY"
+            cat /tmp/doctor-output.txt >> "$GITHUB_STEP_SUMMARY"
+          fi
+
           if [ -n "$TF_VAR_tailscale_authkey" ] && [ -z "$SSH_ALLOWED_CIDRS" ]; then
             cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
 
@@ -215,4 +328,3 @@ jobs:
           > Ensure your Tailnet node authenticates successfully. If Tailscale fails, this server cannot be reached via SSH.
           EOF
           fi
-

@@ -116,3 +116,8 @@ variable "web_token" {
   sensitive   = true
 }
 
+variable "runner_ssh_public_key" {
+  description = "Ephemeral SSH public key for CI runner readiness gate (added during deploy, removed after)"
+  type        = string
+  default     = ""
+}

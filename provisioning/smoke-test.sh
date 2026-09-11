@@ -146,7 +146,43 @@ if [ "${INSTALL_BROWSER:-true}" = "true" ]; then
   fi
 fi
 
-# 8. Summary
+# 8. Hardening integrity checks (F-09)
+echo ""
+echo "--- Hardening checks ---"
+
+# sudoers: user should have passwordless sudo
+if sudo -n -u "$DEVBOX_USER" sudo -n true 2>/dev/null; then
+  ok "Passwordless sudo works for $DEVBOX_USER"
+else
+  warn "Passwordless sudo not confirmed for $DEVBOX_USER"
+fi
+
+# sshd: password auth should be disabled
+SSHD_PASSAUTH=$(sshd -T 2>/dev/null | grep -i 'passwordauthentication' | awk '{print $2}')
+if [ "$SSHD_PASSAUTH" = "no" ]; then
+  ok "sshd PasswordAuthentication is disabled"
+else
+  fail "sshd PasswordAuthentication is not disabled (value: ${SSHD_PASSAUTH:-unknown})"
+fi
+
+# metadata guard: iptables OUTPUT rule for 169.254.169.254
+if iptables -C OUTPUT -d 169.254.169.254 -j DROP 2>/dev/null; then
+  ok "Metadata guard (IPv4 OUTPUT) active"
+else
+  warn "Metadata guard (IPv4 OUTPUT) not detected"
+fi
+
+# cloud-init scrub: no secrets in devbox.env
+if [ -f /etc/devbox/devbox.env ]; then
+  if grep -qE '(TAILSCALE_AUTHKEY|DEVBOX_WEB_TOKEN|PROVISIONING_TOKEN)=".+"' /etc/devbox/devbox.env 2>/dev/null; then
+    fail "Secrets still present in /etc/devbox/devbox.env"
+  else
+    ok "Secrets scrubbed from /etc/devbox/devbox.env"
+  fi
+fi
+
+# 9. Summary
+echo ""
 echo "==========================================="
 echo "Results: $PASS passed, $FAIL failed"
 if [ "$FAIL" -gt 0 ]; then
