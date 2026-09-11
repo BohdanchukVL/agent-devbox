@@ -75,6 +75,16 @@ on:
         required: false
         type: string
         default: ""
+      release_channel:
+        description: Toolchain release channel ('stable' or 'latest')
+        required: false
+        type: string
+        default: "stable"
+      agent_sandbox_strict:
+        description: Enable strict sandboxing for AI agents
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   id-token: write
@@ -383,6 +393,7 @@ jobs:
             -var="git_sha256=${{ steps.payload.outputs.sha256 }}"
             -var="git_ref=${{ steps.payload.outputs.payload_ref }}"
             -var="secrets_url=${{ steps.secrets_payload.outputs.secrets_url }}"
+            -var="release_channel=${{ inputs.release_channel }}"
             -var="agent_sandbox_strict=${{ inputs.agent_sandbox_strict }}"
           )
           if [ "${{ inputs.cloud }}" = "hetzner" ]; then
@@ -458,6 +469,7 @@ jobs:
           echo '```' > /tmp/doctor-output.txt
           ssh "${SSH_OPTS[@]}" "$USER@$IP" 'sudo devbox-doctor --strict' 2>&1 | tee -a /tmp/doctor-output.txt
           echo '```' >> /tmp/doctor-output.txt
+          ssh "${SSH_OPTS[@]}" "$USER@$IP" 'sudo devbox-doctor --manifest' > /tmp/manifest.json 2>/dev/null || true
 
       # ── Cleanup runner access ───────────────────────────────────────────────
       - name: Cleanup runner access
@@ -486,6 +498,7 @@ jobs:
             -var="git_ref=${{ steps.payload.outputs.payload_ref }}"
             -var="runner_ssh_public_key="
             -var="secrets_url=${{ steps.secrets_payload.outputs.secrets_url }}"
+            -var="release_channel=${{ inputs.release_channel }}"
             -var="agent_sandbox_strict=${{ inputs.agent_sandbox_strict }}"
           )
           if [ "${{ inputs.cloud }}" = "hetzner" ]; then
@@ -574,6 +587,14 @@ jobs:
               echo ""
               echo "### devbox-doctor"
               cat /tmp/doctor-output.txt
+            fi
+
+            if [ -f /tmp/manifest.json ] && jq -e . /tmp/manifest.json >/dev/null 2>&1; then
+              echo ""
+              echo "### Installed Versions Manifest"
+              echo '```json'
+              jq . /tmp/manifest.json
+              echo '```'
             fi
 
             if [ -n "$TF_VAR_tailscale_authkey" ] && [ -z "$SSH_ALLOWED_CIDRS" ]; then

@@ -232,6 +232,60 @@ sha256sum \
   > /etc/devbox/integrity.sha256 2>/dev/null || true
 chmod 0644 /etc/devbox/integrity.sha256 2>/dev/null || true
 
+# Generate manifest of installed versions (WP-4, F-12)
+if command -v jq >/dev/null 2>&1; then
+  log "Generating installed version manifest (/etc/devbox/manifest.json)..."
+  U="$DEVBOX_USER"
+  H="/home/$U"
+  NPM_BIN="$H/.npm-global/bin"
+  LOCAL_BIN="$H/.local/bin"
+
+  get_tool_ver() {
+    "$@" 2>/dev/null | head -n1 || echo "not installed"
+  }
+
+  jq -n \
+    --arg node "$(get_tool_ver node -v)" \
+    --arg npm "$(get_tool_ver npm -v)" \
+    --arg pnpm "$(get_tool_ver pnpm -v)" \
+    --arg docker "$(get_tool_ver docker --version)" \
+    --arg tailscale "$(get_tool_ver tailscale version)" \
+    --arg tmux "$(get_tool_ver tmux -V)" \
+    --arg codex "$(PATH="$NPM_BIN:$PATH" get_tool_ver sudo -u "$U" -H codex --version)" \
+    --arg claude "$(PATH="$NPM_BIN:$PATH" get_tool_ver sudo -u "$U" -H claude --version)" \
+    --arg opencode "$(PATH="$NPM_BIN:$PATH" get_tool_ver sudo -u "$U" -H opencode --version)" \
+    --arg agy "$(PATH="$LOCAL_BIN:$PATH" get_tool_ver sudo -u "$U" -H agy --version)" \
+    --arg playwright "$(PATH="$NPM_BIN:$PATH" get_tool_ver sudo -u "$U" -H playwright --version)" \
+    --arg starship "$(get_tool_ver starship --version)" \
+    --arg zoxide "$(get_tool_ver zoxide --version)" \
+    --arg channel "${DEVBOX_RELEASE_CHANNEL:-stable}" \
+    --arg payload_ref "${PROVISIONING_REF:-main}" \
+    --arg created_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+    '{
+      release_channel: $channel,
+      payload_ref: $payload_ref,
+      created_at: $created_at,
+      tools: {
+        node: $node,
+        npm: $npm,
+        pnpm: $pnpm,
+        docker: $docker,
+        tailscale: $tailscale,
+        tmux: $tmux,
+        starship: $starship,
+        zoxide: $zoxide
+      },
+      agents: {
+        codex: $codex,
+        claude: $claude,
+        opencode: $opencode,
+        antigravity: $agy,
+        playwright: $playwright
+      }
+    }' > /etc/devbox/manifest.json
+  chmod 0644 /etc/devbox/manifest.json
+fi
+
 # Mark security configs immutable to prevent accidental tampering (WP-3C)
 chattr +i \
   /etc/sudoers.d/90-devbox \

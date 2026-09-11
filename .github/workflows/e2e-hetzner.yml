@@ -2,9 +2,18 @@ name: E2E Hetzner
 
 on:
   workflow_dispatch:
+    inputs:
+      release_channel:
+        description: Toolchain release channel to test
+        required: true
+        type: choice
+        default: stable
+        options: [stable, latest]
   schedule:
-    # Weekly on Sunday at 04:00 UTC
+    # Weekly on Sunday at 04:00 UTC (tests stable pinned channel)
     - cron: '0 4 * * 0'
+    # Monthly on 1st at 06:00 UTC (tests latest unpinned channel)
+    - cron: '0 6 1 * *'
 
 concurrency: e2e-hetzner
 
@@ -22,6 +31,7 @@ jobs:
       disk_size: "0"
       name_prefix: agent-devbox-e2e-${{ github.run_id }}
       state_key: e2e/${{ github.run_id }}/terraform.tfstate
+      release_channel: ${{ github.event_name == 'schedule' && (github.event.schedule == '0 6 1 * *' && 'latest' || 'stable') || inputs.release_channel || 'stable' }}
     secrets: inherit
 
   destroy:

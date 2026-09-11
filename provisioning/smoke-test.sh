@@ -4,6 +4,16 @@
 # and web companions are fully functional and ready for pair programming.
 set -euo pipefail
 
+if [ "${1:-}" = "--manifest" ]; then
+  if [ -f /etc/devbox/manifest.json ]; then
+    cat /etc/devbox/manifest.json
+    exit 0
+  else
+    echo "Manifest /etc/devbox/manifest.json not found." >&2
+    exit 1
+  fi
+fi
+
 PASS=0
 FAIL=0
 STRICT=0

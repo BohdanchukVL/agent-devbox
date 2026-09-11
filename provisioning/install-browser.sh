@@ -20,9 +20,19 @@ log() { echo "[devbox $(date -u +%H:%M:%S)] $*"; }
 
 [ "${INSTALL_BROWSER:-false}" = "true" ] || { log "browser install skipped"; exit 0; }
 
-log "installing Playwright ${PLAYWRIGHT_VERSION:-latest} + headless Chromium"
+pin() {
+  local var_name="$1"
+  local fallback="${2:-latest}"
+  if [ "${DEVBOX_RELEASE_CHANNEL:-stable}" = "stable" ]; then
+    echo "${!var_name:-$fallback}"
+  else
+    echo "latest"
+  fi
+}
+
+log "installing Playwright $(pin PLAYWRIGHT_VERSION 1.51.0) + headless Chromium"
 # playwright CLI into the dev-owned npm prefix (set up by install-agents.sh)
-sudo -u "$U" -H npm install -g "playwright@${PLAYWRIGHT_VERSION:-latest}" || true
+sudo -u "$U" -H npm install -g "playwright@$(pin PLAYWRIGHT_VERSION 1.51.0)" || true
 
 PW="$H/.npm-global/bin/playwright"
 if [ -x "$PW" ]; then

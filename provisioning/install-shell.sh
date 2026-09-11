@@ -40,16 +40,25 @@ if ! command -v yq >/dev/null 2>&1; then
   fi
 fi
 
-if ! command -v starship >/dev/null 2>&1; then
-  log "installing starship ${STARSHIP_VERSION:-latest}"
-  export STARSHIP_VERSION="${STARSHIP_VERSION:-}"
-  curl -fsSL https://starship.rs/install.sh | sh -s -- -y -b /usr/local/bin || true
-fi
+pin() {
+  local var_name="$1"
+  local fallback="${2:-latest}"
+  if [ "${DEVBOX_RELEASE_CHANNEL:-stable}" = "stable" ]; then
+    echo "${!var_name:-$fallback}"
+  else
+    echo "latest"
+  fi
+}
 
-if ! command -v zoxide >/dev/null 2>&1; then
-  log "installing zoxide ${ZOXIDE_VERSION:-latest}"
-  export ZOXIDE_VERSION="${ZOXIDE_VERSION:-}"
-  curl -fsSL https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh | sh -s -- --bin-dir /usr/local/bin || true
+if ! command -v starship >/dev/null 2>&1; then
+  SS_VER=$(pin STARSHIP_VERSION "1.22.1")
+  log "installing starship ($SS_VER)"
+  if [ "$SS_VER" != "latest" ] && [ -n "$SS_VER" ]; then
+    curl -fsSL https://starship.rs/install.sh | sh -s -- -y -b /usr/local/bin --version "v$SS_VER" || \
+      curl -fsSL https://starship.rs/install.sh | sh -s -- -y -b /usr/local/bin || true
+  else
+    curl -fsSL https://starship.rs/install.sh | sh -s -- -y -b /usr/local/bin || true
+  fi
 fi
 
 if ! command -v lazygit >/dev/null 2>&1; then

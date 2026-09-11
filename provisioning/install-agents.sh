@@ -28,6 +28,16 @@ install -m 0644 -o "$U" -g "$U" /dev/null "$H/.zshenv"
 # shellcheck disable=SC2016
 echo 'export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"' >> "$H/.zshenv"
 
+pin() {
+  local var_name="$1"
+  local fallback="${2:-latest}"
+  if [ "${DEVBOX_RELEASE_CHANNEL:-stable}" = "stable" ]; then
+    echo "${!var_name:-$fallback}"
+  else
+    echo "latest"
+  fi
+}
+
 # install as dev so files land in the dev-owned prefix (npm reads ~/.npmrc)
 agent() {
   log "installing npm package(s): $*"
@@ -37,17 +47,17 @@ agent() {
 if [ "$INSTALL_CODEX" = "true" ]; then
   log "installing Codex CLI"
   which bwrap >/dev/null 2>&1 || apt-get install -y --no-install-recommends bubblewrap || true
-  agent "@openai/codex@${CODEX_VERSION:-latest}"
+  agent "@openai/codex@$(pin CODEX_VERSION latest)"
 fi
 
 if [ "$INSTALL_CLAUDE" = "true" ]; then
   log "installing Claude Code"
-  agent "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION:-latest}"
+  agent "@anthropic-ai/claude-code@$(pin CLAUDE_CODE_VERSION latest)"
 fi
 
 if [ "$INSTALL_OPENCODE" = "true" ]; then
   log "installing OpenCode"
-  agent "opencode-ai@${OPENCODE_VERSION:-latest}"
+  agent "opencode-ai@$(pin OPENCODE_VERSION latest)"
 fi
 
 if [ "${INSTALL_ANTIGRAVITY:-false}" = "true" ]; then
@@ -60,10 +70,10 @@ if [ "${INSTALL_ANTIGRAVITY:-false}" = "true" ]; then
 fi
 
 log "installing code intelligence and MCP tools"
-agent "@ast-grep/cli@${AST_GREP_CLI_VERSION:-latest}" \
-  "@notprolands/ast-grep-mcp@${AST_GREP_MCP_VERSION:-latest}" \
-  "@modelcontextprotocol/server-memory@${MCP_SERVER_MEMORY_VERSION:-latest}" \
-  "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION:-latest}"
+agent "@ast-grep/cli@$(pin AST_GREP_VERSION 0.38.1)" \
+  "@notprolands/ast-grep-mcp@$(pin AST_GREP_MCP_VERSION 0.1.7)" \
+  "@modelcontextprotocol/server-memory@$(pin MCP_MEMORY_VERSION 0.6.2)" \
+  "@playwright/mcp@$(pin PLAYWRIGHT_MCP_VERSION 0.0.32)"
 
 # Setup devbox-code-intel MCP server
 install -d -o "$U" -g "$U" "$H/.devbox/mcp/code-intel"
