@@ -13,6 +13,8 @@ import {
   handleFindFiles,
   handleFindDefinition,
   handleGetOutline,
+  updateFileInCache,
+  findProjectDir,
   CACHE_DIR
 } from '../index.js';
 
@@ -121,4 +123,45 @@ test('handleGetOutline validates file existence', () => {
   const resMissing = handleGetOutline({ path: '/tmp/nonexistent-outline-file.js' });
   assert.ok(resMissing.error);
   assert.match(resMissing.error, /File not found/i);
+});
+
+test('updateFileInCache updates cached tags for specific file', () => {
+  const repoRoot = findProjectDir(process.cwd());
+  const cachePath = getCachePath(repoRoot);
+  const cacheDir = path.dirname(cachePath);
+  fs.mkdirSync(cacheDir, { recursive: true });
+
+  const originalCache = fs.existsSync(cachePath) ? fs.readFileSync(cachePath, 'utf8') : null;
+  const dummyFile = path.join(repoRoot, 'dummy-test-file.js');
+
+  try {
+    const initialTags = [
+      { name: 'ExistingSymbol', kind: 'function', path: path.join(repoRoot, 'other.js'), line: 5 },
+      { name: 'OldDummySymbol', kind: 'function', path: dummyFile, line: 1 }
+    ];
+    fs.writeFileSync(cachePath, JSON.stringify({
+      freshnessKey: getFreshnessKey(repoRoot),
+      tags: initialTags
+    }));
+
+    const newFileTags = [
+      { name: 'NewDummySymbol1', kind: 'class', line: 10 },
+      { name: 'NewDummySymbol2', kind: 'method', line: 20 }
+    ];
+
+    updateFileInCache(dummyFile, newFileTags);
+
+    const updated = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
+    assert.equal(updated.tags.length, 3);
+    assert.ok(updated.tags.some(t => t.name === 'ExistingSymbol'));
+    assert.ok(!updated.tags.some(t => t.name === 'OldDummySymbol'));
+    assert.ok(updated.tags.some(t => t.name === 'NewDummySymbol1' && t.line === 10));
+    assert.ok(updated.tags.some(t => t.name === 'NewDummySymbol2' && t.line === 20));
+  } finally {
+    if (originalCache !== null) {
+      fs.writeFileSync(cachePath, originalCache);
+    } else if (fs.existsSync(cachePath)) {
+      fs.unlinkSync(cachePath);
+    }
+  }
 });

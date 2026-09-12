@@ -44,12 +44,12 @@ function getMimeType(filePath) {
 }
 
 function sanitizeSessionName(name) {
-  if (typeof name !== 'string') return 'main-web';
+  if (typeof name !== 'string') return 'main';
   const clean = name.trim();
   if (/^[a-zA-Z0-9_-]{1,64}$/.test(clean)) {
     return clean;
   }
-  return 'main-web';
+  return 'main';
 }
 
 function ensureTmuxSession(sessionName) {
@@ -117,7 +117,11 @@ function parseCookies(cookieHeader) {
     const name = parts[0]?.trim();
     if (!name) return;
     const value = parts.slice(1).join('=').trim();
-    list[name] = decodeURIComponent(value);
+    try {
+      list[name] = decodeURIComponent(value);
+    } catch {
+      list[name] = value;
+    }
   });
   return list;
 }
@@ -196,7 +200,7 @@ const server = http.createServer((req, res) => {
 
   // 1. Upload API
   if (req.method === 'POST' && pathname === '/api/upload') {
-    const session = url.searchParams.get('session') || 'main-web';
+    const session = sanitizeSessionName(url.searchParams.get('session') || 'main');
     ensureTmuxSession(session);
     const cwd = getPaneCwd(session);
 
@@ -282,7 +286,7 @@ const server = http.createServer((req, res) => {
     req.on('end', () => {
       try {
         const data = JSON.parse(body || '{}');
-        const session = sanitizeSessionName(data.session || 'main-web');
+        const session = sanitizeSessionName(data.session || 'main');
         ensureTmuxSession(session);
 
         if (data.action === 'zoom') {
@@ -304,7 +308,7 @@ const server = http.createServer((req, res) => {
 
   // 3. Status API
   if (req.method === 'GET' && pathname === '/api/status') {
-    const session = sanitizeSessionName(url.searchParams.get('session') || 'main-web');
+    const session = sanitizeSessionName(url.searchParams.get('session') || 'main');
     let cwd = '';
     try {
       cwd = getPaneCwd(session);

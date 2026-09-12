@@ -88,6 +88,38 @@ function rebuildIndexInBackground(dir) {
   proc.on('error', () => { _rebuildingDirs.delete(dir); });
 }
 
+function findProjectDir(targetPath) {
+  let curr = fs.existsSync(targetPath) && fs.statSync(targetPath).isDirectory()
+    ? targetPath
+    : path.dirname(targetPath);
+  while (curr && curr !== path.dirname(curr)) {
+    if (fs.existsSync(path.join(curr, '.git'))) return curr;
+    curr = path.dirname(curr);
+  }
+  return path.dirname(targetPath);
+}
+
+function updateFileInCache(filePath, symbols) {
+  try {
+    const projectDir = findProjectDir(filePath);
+    const cachePath = getCachePath(projectDir);
+    if (!fs.existsSync(cachePath)) return;
+    const data = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
+    if (!data || !Array.isArray(data.tags)) return;
+    const absTarget = path.resolve(filePath);
+    const otherTags = data.tags.filter(t => path.resolve(t.path) !== absTarget);
+    const newTags = symbols.map(s => ({
+      name: s.name,
+      kind: s.kind || 'unknown',
+      path: filePath,
+      line: s.line
+    }));
+    data.tags = otherTags.concat(newTags);
+    data.freshnessKey = getFreshnessKey(projectDir);
+    fs.writeFileSync(cachePath, JSON.stringify(data));
+  } catch {}
+}
+
 // Standard ignore arguments for ripgrep and ctags
 const EXCLUDE_DIRS = [
   'node_modules',
@@ -169,6 +201,9 @@ function handleGetOutline(args) {
     if (symbols.length === 0) {
       return { text: `No structured symbols found in ${path.basename(filePath)}` };
     }
+
+    // Update cached tags for this file if cache exists
+    updateFileInCache(filePath, symbols);
 
     // Sort by line number
     symbols.sort((a, b) => a.line - b.line);
@@ -524,6 +559,8 @@ export {
   handleFindDefinition,
   handleFindReferences,
   handleFindFiles,
+  findProjectDir,
+  updateFileInCache,
   CACHE_DIR
 };
 

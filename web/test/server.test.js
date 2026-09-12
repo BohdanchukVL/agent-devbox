@@ -27,6 +27,14 @@ test('parseCookies correctly parses cookie strings', () => {
   // URL-encoded values
   const encoded = 'devbox_token=hello%20world%21';
   assert.equal(parseCookies(encoded)['devbox_token'], 'hello world!');
+
+  // Malformed URL-encoded value does not throw URIError (DoS protection)
+  const malformed = 'devbox_token=%E0%A4%A; theme=dark';
+  assert.doesNotThrow(() => {
+    const parsed = parseCookies(malformed);
+    assert.equal(parsed['devbox_token'], '%E0%A4%A');
+    assert.equal(parsed['theme'], 'dark');
+  });
 });
 
 test('checkAuth verifies authentication via headers, cookies, and query params', () => {
@@ -113,6 +121,28 @@ test('server rejects cross-origin POST requests with 403 Forbidden', async () =>
     });
     assert.equal(resAction.statusCode, 403);
     assert.match(resAction.body, /cross-origin POST not allowed/i);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await new Promise((resolve) => wss.close(resolve));
+  }
+});
+
+test('server does not crash on malformed cookie request (DoS resistance)', async () => {
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+
+  try {
+    const res = await makeRequest({
+      port,
+      path: '/api/status',
+      method: 'GET',
+      headers: {
+        'Cookie': 'devbox_token=%E0%A4%A; test=123',
+        'Host': `127.0.0.1:${port}`
+      }
+    });
+    // Should reject with 401 Unauthorized (since token is invalid), not crash
+    assert.equal(res.statusCode, 401);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     await new Promise((resolve) => wss.close(resolve));
