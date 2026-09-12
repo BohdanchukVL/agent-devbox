@@ -6,6 +6,29 @@ set -euo pipefail
 
 PASS=0
 FAIL=0
+STRICT=0
+SHOW_MANIFEST=0
+
+for arg in "$@"; do
+  case "$arg" in
+    --strict)
+      STRICT=1
+      ;;
+    --manifest)
+      SHOW_MANIFEST=1
+      ;;
+  esac
+done
+
+if [ "$SHOW_MANIFEST" -eq 1 ]; then
+  if [ -f /etc/devbox/manifest.json ]; then
+    cat /etc/devbox/manifest.json
+    exit 0
+  else
+    echo "Manifest /etc/devbox/manifest.json not found" >&2
+    exit 1
+  fi
+fi
 
 ok() {
   echo "  [PASS] $*"
@@ -19,6 +42,9 @@ fail() {
 
 warn() {
   echo "  [WARN] $*"
+  if [ "$STRICT" -eq 1 ]; then
+    FAIL=$((FAIL + 1))
+  fi
 }
 
 echo "=== Agent Devbox Readiness & Smoke Tests ==="
@@ -150,11 +176,19 @@ fi
 echo ""
 echo "--- Hardening checks ---"
 
-# sudoers: user should have passwordless sudo
+# sudoers: user should have passwordless sudo and valid syntax
 if sudo -n -u "$DEVBOX_USER" sudo -n true 2>/dev/null; then
   ok "Passwordless sudo works for $DEVBOX_USER"
 else
-  warn "Passwordless sudo not confirmed for $DEVBOX_USER"
+  fail "Passwordless sudo not confirmed for $DEVBOX_USER"
+fi
+
+if [ -f /etc/sudoers.d/90-devbox ]; then
+  if visudo -cf /etc/sudoers.d/90-devbox >/dev/null 2>&1; then
+    ok "Sudoers drop-in /etc/sudoers.d/90-devbox syntax valid"
+  else
+    fail "Sudoers drop-in /etc/sudoers.d/90-devbox syntax invalid"
+  fi
 fi
 
 # sshd: password auth should be disabled
@@ -166,10 +200,12 @@ else
 fi
 
 # metadata guard: iptables OUTPUT rule for 169.254.169.254
-if iptables -C OUTPUT -d 169.254.169.254 -j DROP 2>/dev/null; then
+if iptables -C OUTPUT -m owner ! --uid-owner 0 -d 169.254.169.254 -j DROP 2>/dev/null; then
+  ok "Metadata guard (IPv4 OUTPUT) active"
+elif iptables -C OUTPUT -d 169.254.169.254 -j DROP 2>/dev/null; then
   ok "Metadata guard (IPv4 OUTPUT) active"
 else
-  warn "Metadata guard (IPv4 OUTPUT) not detected"
+  fail "Metadata guard (IPv4 OUTPUT) not detected"
 fi
 
 # cloud-init scrub: no secrets in devbox.env

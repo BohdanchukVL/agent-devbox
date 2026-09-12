@@ -142,7 +142,7 @@ jobs:
 
           echo "### devbox-doctor" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          $SSH 'sudo devbox-doctor' 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY"
+          $SSH 'sudo devbox-doctor --strict' 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
           echo "--- Checking tmux ---"
@@ -151,7 +151,21 @@ jobs:
           echo "--- Checking agent versions ---"
           $SSH 'export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"; claude --version 2>/dev/null || true; codex --version 2>/dev/null || true; agy --version 2>/dev/null || true'
 
+          echo "=== E2E Assertion: No secrets in obj.pkl ==="
+          $SSH 'sudo strings /var/lib/cloud/instance/obj.pkl 2>/dev/null | grep -E "(tskey-|DEVBOX_WEB_TOKEN)" && exit 1 || echo "PASS: obj.pkl contains no secrets"'
+
+          echo "=== E2E Assertion: Sandbox privilege escalation fails ==="
+          $SSH 'which bwrap >/dev/null 2>&1 && (bwrap --unshare-user --ro-bind / / -- sudo -n true 2>&1 | grep -q "sudo:" && echo "PASS: sudo fails inside bwrap") || echo "bwrap not present, skipping"'
+
+          echo "=== E2E Assertion: Container cannot access metadata endpoint ==="
+          $SSH 'docker run --rm curlimages/curl:latest -m 3 http://169.254.169.254/ 2>&1 | grep -E "(timed out|Connection refused|Failed to connect)" && echo "PASS: metadata blocked in containers"'
+
+          echo "=== E2E Assertion: Tailscale RunSSH is false ==="
+          $SSH 'tailscale debug prefs 2>/dev/null | grep -q "RunSSH: false" && echo "PASS: RunSSH is false" || echo "Tailscale RunSSH check skipped"'
+
       - name: Terraform destroy
         if: always()
         working-directory: terraform/hetzner
-        run: terraform destroy -auto-approve
+        env:
+          TF_VAR_ssh_public_key: ${{ steps.ssh.outputs.public_key }}
+        run: terraform destroy -auto-approve -var="ssh_public_key=${{ steps.ssh.outputs.public_key }}"

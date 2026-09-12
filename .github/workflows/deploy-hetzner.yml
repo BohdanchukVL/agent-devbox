@@ -209,16 +209,18 @@ jobs:
           SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o BatchMode=yes -i $SSH_KEY"
 
           echo "Waiting for provisioning to complete on $IP (up to 15 min)..."
+          PROVISION_STATUS="timeout"
           for i in $(seq 1 90); do
             if ssh $SSH_OPTS "$USER@$IP" 'test -f /etc/devbox/.provisioned' 2>/dev/null; then
               echo "✅ Provisioning completed successfully."
-              echo "status=success" >> "$GITHUB_OUTPUT"
+              PROVISION_STATUS="success"
               break
             fi
             if ssh $SSH_OPTS "$USER@$IP" 'test -f /etc/devbox/.failed' 2>/dev/null; then
               echo "❌ Provisioning failed."
               echo "::error::Provisioning failed — see logs below"
               ssh $SSH_OPTS "$USER@$IP" 'cat /etc/devbox/.failed; echo "---"; tail -80 /var/log/devbox-install.log' 2>/dev/null || true
+              PROVISION_STATUS="failed"
               echo "status=failed" >> "$GITHUB_OUTPUT"
               exit 1
             fi
@@ -228,12 +230,14 @@ jobs:
             sleep 10
           done
 
-          if [ "$(grep -c 'status=' "$GITHUB_OUTPUT" 2>/dev/null || echo 0)" -eq 0 ]; then
+          if [ "$PROVISION_STATUS" != "success" ]; then
             echo "::error::Provisioning timed out after 15 minutes"
             ssh $SSH_OPTS "$USER@$IP" 'tail -40 /var/log/devbox-install.log' 2>/dev/null || true
             echo "status=timeout" >> "$GITHUB_OUTPUT"
             exit 1
           fi
+
+          echo "status=success" >> "$GITHUB_OUTPUT"
 
       - name: Run devbox-doctor
         if: steps.readiness.outputs.status == 'success'
@@ -245,7 +249,7 @@ jobs:
           USER="${{ steps.readiness.outputs.user }}"
           SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -i $SSH_KEY"
           echo '```' > /tmp/doctor-output.txt
-          ssh $SSH_OPTS "$USER@$IP" 'sudo devbox-doctor' 2>/dev/null | tee -a /tmp/doctor-output.txt || true
+          ssh $SSH_OPTS "$USER@$IP" 'sudo devbox-doctor --strict' 2>&1 | tee -a /tmp/doctor-output.txt
           echo '```' >> /tmp/doctor-output.txt
 
       - name: Cleanup runner access
@@ -275,6 +279,15 @@ jobs:
             -var="git_ref=${{ steps.payload.outputs.payload_ref }}" \
             -var="runner_ssh_public_key=" \
             2>&1 || echo "::warning::Cleanup apply failed — runner IP may remain in firewall"
+
+          # Remove ephemeral runner SSH key from devbox authorized_keys
+          IP="${{ steps.readiness.outputs.ip }}"
+          USER="${{ steps.readiness.outputs.user }}"
+          SSH_KEY="${{ steps.runner_key.outputs.private_key_path }}"
+          RUNNER_PUB="${{ steps.runner_key.outputs.public_key }}"
+          if [ -n "$IP" ] && [ -n "$USER" ] && [ -f "$SSH_KEY" ]; then
+            ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -i "$SSH_KEY" "$USER@$IP" "sed -i '\|${RUNNER_PUB}|d' ~/.ssh/authorized_keys 2>/dev/null || true" 2>/dev/null || true
+          fi
 
       - name: Deployment summary
         if: always()
