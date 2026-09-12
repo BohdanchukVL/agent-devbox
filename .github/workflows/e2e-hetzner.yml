@@ -10,6 +10,7 @@ concurrency: e2e-hetzner
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   deploy:

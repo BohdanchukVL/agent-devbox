@@ -92,4 +92,9 @@ run "payload_ref_reaches_trigger" {
     condition     = can(regex("test-payload-ref-1234", terraform_data.payload.input))
     error_message = "payload_ref/git_ref must reach the terraform_data trigger"
   }
+
+  assert {
+    condition     = startswith(terraform_data.payload.input, "${var.git_ref}:${var.server_type}:")
+    error_message = "terraform_data payload trigger must start with git_ref:server_type to match main"
+  }
 }

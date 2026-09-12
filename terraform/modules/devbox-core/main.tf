@@ -52,6 +52,12 @@ variable "tailscale_authkey" {
   sensitive = true
 }
 
+variable "instance_type" {
+  description = "Cloud instance or server type for trigger tracking"
+  type        = string
+  default     = ""
+}
+
 variable "workspace_device" {
   description = "Block device path for the workspace volume, or empty string for root disk"
   type        = string
@@ -151,6 +157,7 @@ output "replace_triggers" {
   description = "Trigger string that changes when server must be recreated due to configuration changes"
   value = join(":", [
     var.git_ref,
+    var.instance_type,
     var.install_docker,
     var.install_codex,
     var.install_claude,

@@ -2,6 +2,7 @@ module "core" {
   source = "../modules/devbox-core"
 
   username              = var.username
+  instance_type         = var.vm_size
   ssh_public_key        = var.ssh_public_key
   runner_ssh_public_key = var.runner_ssh_public_key
   install_docker        = var.install_docker
@@ -112,7 +113,7 @@ resource "azurerm_network_interface_security_group_association" "this" {
 }
 
 resource "terraform_data" "payload" {
-  input = "${var.vm_size}:${module.core.replace_triggers}"
+  input = module.core.replace_triggers
 }
 
 resource "azurerm_linux_virtual_machine" "this" {

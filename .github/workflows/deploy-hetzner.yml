@@ -47,17 +47,23 @@ on:
         description: Comma-separated CIDRs allowed for SSH fallback (e.g. 203.0.113.50/32). Recommended when Tailscale is used.
         required: false
         default: ""
+      backups:
+        description: Enable Hetzner automatic server backups
+        type: boolean
+        default: true
 
 concurrency: hetzner-devbox
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   deploy:
     uses: ./.github/workflows/_deploy.yml
     with:
       cloud: hetzner
+      backups: ${{ inputs.backups }}
       location: ${{ inputs.location }}
       server_type: ${{ inputs.server_type }}
       disk_size: ${{ inputs.disk_size }}

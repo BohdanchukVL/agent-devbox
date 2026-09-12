@@ -2,6 +2,7 @@ module "core" {
   source = "../modules/devbox-core"
 
   username              = var.username
+  instance_type         = var.server_type
   ssh_public_key        = var.ssh_public_key
   runner_ssh_public_key = var.runner_ssh_public_key
   install_docker        = var.install_docker
@@ -72,7 +73,7 @@ resource "hcloud_volume" "workspace" {
 }
 
 resource "terraform_data" "payload" {
-  input = "${var.server_type}:${module.core.replace_triggers}"
+  input = module.core.replace_triggers
 }
 
 resource "hcloud_server" "this" {
