@@ -107,55 +107,46 @@ fi
 # idle sessions current (seconds).
 STATUSLINE_BIN="$H/.devbox/bin/claude-statusline"
 install -d -o "$U" -g "$U" "$H/.claude"
-# Configure Claude Code settings (statusLine hook + strict sandbox WP-3B)
+# Configure Claude Code settings (statusLine hook + strict sandbox WP-3B via jq merge)
 STRICT_SANDBOX="${AGENT_SANDBOX_STRICT:-true}"
-ALLOW_UNSANDBOXED=$([ "$STRICT_SANDBOX" = "false" ] && echo "true" || echo "false")
+ALLOWED_DOMAINS='["registry.npmjs.org","github.com","api.github.com","objects.githubusercontent.com","crates.io","static.crates.io","pypi.org","files.pythonhosted.org","proxy.golang.org"]'
 
-cat > "$H/.claude/settings.json" <<EOF
-{
-  "statusLine": {
-    "type": "command",
-    "command": "$STATUSLINE_BIN",
-    "refreshInterval": 30
-  },
-  "sandbox": {
-    "enabled": true,
-    "failIfUnavailable": true,
-    "allowUnsandboxedCommands": $ALLOW_UNSANDBOXED,
-    "network": {
-      "allowedDomains": [
-        "registry.npmjs.org",
-        "github.com",
-        "api.github.com",
-        "objects.githubusercontent.com",
-        "crates.io",
-        "static.crates.io",
-        "pypi.org",
-        "files.pythonhosted.org",
-        "proxy.golang.org"
-      ]
-    }
-  }
-}
-EOF
-chown "$U:$U" "$H/.claude/settings.json"
+SETTINGS_FILE="$H/.claude/settings.json"
+if [ ! -f "$SETTINGS_FILE" ] || ! jq -e . "$SETTINGS_FILE" >/dev/null 2>&1; then
+  echo "{}" > "$SETTINGS_FILE"
+fi
+
+TMP_SETTINGS=$(mktemp)
+jq --arg cmd "$STATUSLINE_BIN" \
+   --argjson strict "$([ "$STRICT_SANDBOX" = "false" ] && echo "false" || echo "true")" \
+   --argjson domains "$ALLOWED_DOMAINS" \
+   '.statusLine = {"type": "command", "command": $cmd, "refreshInterval": 30} |
+    .sandbox = {
+      "enabled": true,
+      "failIfUnavailable": true,
+      "network": {
+        "allowedDomains": $domains
+      }
+    } |
+    if $strict then .allowUnsandboxedCommands = false else del(.allowUnsandboxedCommands) end' \
+   "$SETTINGS_FILE" > "$TMP_SETTINGS" && mv "$TMP_SETTINGS" "$SETTINGS_FILE"
+
+chown "$U:$U" "$SETTINGS_FILE"
+chmod 0600 "$SETTINGS_FILE"
 rm -f /tmp/.claude-status.json 2>/dev/null || true
 
 # Codex sandbox config (WP-3B: workspace-write sandbox mode)
 install -d -o "$U" -g "$U" "$H/.codex"
 cat > "$H/.codex/config.toml" <<'TOML'
-# Codex sandbox config for agent-devbox
-model = "o4-mini"
-approval_policy = "on-request"
+# Codex configuration for agent-devbox
 sandbox_mode = "workspace-write"
+approval_policy = "on-request"
 
 [sandbox_workspace_write]
 writable_roots = ["/workspace"]
-
-[sandbox]
-enable_networking = true
 TOML
 chown "$U:$U" "$H/.codex/config.toml"
+chmod 0600 "$H/.codex/config.toml"
 
 # Configure persistent memory storage (persisting across VM rebuilds if /workspace is mounted)
 if mountpoint -q /workspace 2>/dev/null; then

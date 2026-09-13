@@ -90,13 +90,6 @@ variable "git_ref" {
   default     = "main"
 }
 
-variable "git_token" {
-  description = "GitHub personal access token for private repository provisioning payload"
-  type        = string
-  default     = ""
-  sensitive   = true
-}
-
 variable "git_sha256" {
   description = "Optional SHA256 checksum to verify provisioning payload archive"
   type        = string

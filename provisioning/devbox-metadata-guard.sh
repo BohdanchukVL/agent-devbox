@@ -12,11 +12,10 @@ if command -v iptables >/dev/null 2>&1; then
   iptables -C OUTPUT -m owner ! --uid-owner 0 -d "$METADATA_IP4" -j DROP 2>/dev/null || \
     iptables -A OUTPUT -m owner ! --uid-owner 0 -d "$METADATA_IP4" -j DROP 2>/dev/null || true
 
-  # Container traffic: containers must never query instance metadata
-  if iptables -L DOCKER-USER >/dev/null 2>&1; then
-    iptables -C DOCKER-USER -d "$METADATA_IP4" -j DROP 2>/dev/null || \
-      iptables -I DOCKER-USER -d "$METADATA_IP4" -j DROP 2>/dev/null || true
-  fi
+  # Container traffic: pre-create DOCKER-USER chain if missing so Docker adopts it, then insert DROP rule
+  iptables -N DOCKER-USER 2>/dev/null || true
+  iptables -C DOCKER-USER -d "$METADATA_IP4" -j DROP 2>/dev/null || \
+    iptables -I DOCKER-USER -d "$METADATA_IP4" -j DROP 2>/dev/null || true
 fi
 
 if command -v ip6tables >/dev/null 2>&1; then
@@ -24,10 +23,9 @@ if command -v ip6tables >/dev/null 2>&1; then
   ip6tables -C OUTPUT -m owner ! --uid-owner 0 -d "$METADATA_IP6" -j DROP 2>/dev/null || \
     ip6tables -A OUTPUT -m owner ! --uid-owner 0 -d "$METADATA_IP6" -j DROP 2>/dev/null || true
 
-  if ip6tables -L DOCKER-USER >/dev/null 2>&1; then
-    ip6tables -C DOCKER-USER -d "$METADATA_IP6" -j DROP 2>/dev/null || \
-      ip6tables -I DOCKER-USER -d "$METADATA_IP6" -j DROP 2>/dev/null || true
-  fi
+  ip6tables -N DOCKER-USER 2>/dev/null || true
+  ip6tables -C DOCKER-USER -d "$METADATA_IP6" -j DROP 2>/dev/null || \
+    ip6tables -I DOCKER-USER -d "$METADATA_IP6" -j DROP 2>/dev/null || true
 fi
 
 echo "metadata guard active: $METADATA_IP4 & $METADATA_IP6 blocked for non-root and containers"

@@ -60,6 +60,11 @@ on:
         required: false
         type: boolean
         default: true
+      agent_sandbox_strict:
+        description: Enable strict unprivileged sandbox for Claude Code and Codex
+        required: false
+        type: boolean
+        default: true
       name_prefix:
         description: Optional resource name override (e.g. for E2E)
         required: false
@@ -269,8 +274,8 @@ jobs:
           AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
         run: |
           cat > /tmp/devbox-secrets.env <<EOF
-          TAILSCALE_AUTHKEY="$TS_KEY"
-          DEVBOX_WEB_TOKEN="$WEB_TOKEN"
+          export TAILSCALE_AUTHKEY="$TS_KEY"
+          export DEVBOX_WEB_TOKEN="$WEB_TOKEN"
           EOF
           RUN_ID="${{ github.run_id }}"
           SECRETS_URL=""
@@ -378,11 +383,13 @@ jobs:
             -var="git_sha256=${{ steps.payload.outputs.sha256 }}"
             -var="git_ref=${{ steps.payload.outputs.payload_ref }}"
             -var="secrets_url=${{ steps.secrets_payload.outputs.secrets_url }}"
+            -var="agent_sandbox_strict=${{ inputs.agent_sandbox_strict }}"
           )
           if [ "${{ inputs.cloud }}" = "hetzner" ]; then
             terraform apply "${COMMON_ARGS[@]}" \
               -var="server_type=${{ inputs.server_type }}" \
-              -var="location=${{ inputs.location }}"
+              -var="location=${{ inputs.location }}" \
+              -var="backups=${{ inputs.backups }}"
           elif [ "${{ inputs.cloud }}" = "aws" ]; then
             terraform apply "${COMMON_ARGS[@]}" \
               -var="instance_type=${{ inputs.server_type }}" \
@@ -479,6 +486,7 @@ jobs:
             -var="git_ref=${{ steps.payload.outputs.payload_ref }}"
             -var="runner_ssh_public_key="
             -var="secrets_url=${{ steps.secrets_payload.outputs.secrets_url }}"
+            -var="agent_sandbox_strict=${{ inputs.agent_sandbox_strict }}"
           )
           if [ "${{ inputs.cloud }}" = "hetzner" ]; then
             terraform apply "${COMMON_ARGS[@]}" \

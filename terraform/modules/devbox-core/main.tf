@@ -74,12 +74,6 @@ variable "git_ref" {
   default = "main"
 }
 
-variable "git_token" {
-  type      = string
-  default   = ""
-  sensitive = true
-}
-
 variable "git_sha256" {
   type    = string
   default = ""
@@ -138,7 +132,6 @@ output "user_data" {
     bootstrap_script      = file("${path.module}/../../../provisioning/bootstrap.sh")
     git_repo              = var.git_repo
     git_ref               = var.git_ref
-    git_token             = var.git_token
     git_sha256            = var.git_sha256
     tarball_url           = var.tarball_url
     web_token             = var.web_token
@@ -168,9 +161,7 @@ output "replace_triggers" {
     var.install_antigravity,
     var.install_browser,
     var.username,
-    sha256(var.ssh_public_key),
-    sha256(var.tailscale_authkey),
-    sha256(var.web_token)
+    sha256(var.ssh_public_key)
   ])
 }
 

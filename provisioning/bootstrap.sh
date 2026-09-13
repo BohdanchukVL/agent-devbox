@@ -43,8 +43,11 @@ if [ -n "$PROVISIONING_SECRETS_URL" ]; then
   log "Fetching secrets payload from presigned URL..."
   if curl -fsSL --retry 3 --retry-delay 2 "$PROVISIONING_SECRETS_URL" -o /etc/devbox/secrets.env; then
     chmod 0600 /etc/devbox/secrets.env
+    set -a
     # shellcheck source=/dev/null
     . /etc/devbox/secrets.env
+    set +a
+    export TAILSCALE_AUTHKEY DEVBOX_WEB_TOKEN
     sed -i '/^PROVISIONING_SECRETS_URL=/d' /etc/devbox/devbox.env 2>/dev/null || true
     unset PROVISIONING_SECRETS_URL
   else
@@ -204,6 +207,9 @@ UNIT
 [Unit]
 Wants=devbox-metadata-guard.service
 After=devbox-metadata-guard.service
+
+[Service]
+ExecStartPost=/usr/local/bin/devbox-metadata-guard
 UNIT
 
   systemctl daemon-reload

@@ -15,7 +15,6 @@ module "core" {
   workspace_device      = ""
   git_repo              = var.git_repo
   git_ref               = var.git_ref
-  git_token             = var.git_token
   git_sha256            = var.git_sha256
   tarball_url           = var.tarball_url
   web_token             = var.web_token

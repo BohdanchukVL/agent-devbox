@@ -15,7 +15,6 @@ module "core" {
   workspace_device      = local.use_volume ? "/dev/disk/by-id/scsi-0HC_Volume_${hcloud_volume.workspace[0].id}" : ""
   git_repo              = var.git_repo
   git_ref               = var.git_ref
-  git_token             = var.git_token
   git_sha256            = var.git_sha256
   tarball_url           = var.tarball_url
   web_token             = var.web_token
