@@ -2,7 +2,7 @@ name: Lint and Validate
 
 on:
   push:
-    branches: [main, refactoring, security]
+    branches: [main]
   pull_request:
 
 permissions:
