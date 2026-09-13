@@ -241,7 +241,23 @@ if command -v jq >/dev/null 2>&1; then
   LOCAL_BIN="$H/.local/bin"
 
   get_tool_ver() {
-    "$@" 2>/dev/null | head -n1 || echo "not installed"
+    local out
+    out=$("$@" 2>/dev/null | head -n1) || true
+    if [ -n "$out" ]; then
+      echo "$out"
+    else
+      echo "not installed"
+    fi
+  }
+
+  get_user_tool_ver() {
+    local out
+    out=$(sudo -u "$U" -H env PATH="$NPM_BIN:$LOCAL_BIN:/usr/local/bin:/usr/bin:/bin:$PATH" "$@" 2>/dev/null | head -n1) || true
+    if [ -n "$out" ]; then
+      echo "$out"
+    else
+      echo "not installed"
+    fi
   }
 
   jq -n \
@@ -251,11 +267,11 @@ if command -v jq >/dev/null 2>&1; then
     --arg docker "$(get_tool_ver docker --version)" \
     --arg tailscale "$(get_tool_ver tailscale version)" \
     --arg tmux "$(get_tool_ver tmux -V)" \
-    --arg codex "$(PATH="$NPM_BIN:$PATH" get_tool_ver sudo -u "$U" -H codex --version)" \
-    --arg claude "$(PATH="$NPM_BIN:$PATH" get_tool_ver sudo -u "$U" -H claude --version)" \
-    --arg opencode "$(PATH="$NPM_BIN:$PATH" get_tool_ver sudo -u "$U" -H opencode --version)" \
-    --arg agy "$(PATH="$LOCAL_BIN:$PATH" get_tool_ver sudo -u "$U" -H agy --version)" \
-    --arg playwright "$(PATH="$NPM_BIN:$PATH" get_tool_ver sudo -u "$U" -H playwright --version)" \
+    --arg codex "$(get_user_tool_ver codex --version)" \
+    --arg claude "$(get_user_tool_ver claude --version)" \
+    --arg opencode "$(get_user_tool_ver opencode --version)" \
+    --arg agy "$(get_user_tool_ver agy --version)" \
+    --arg playwright "$(get_user_tool_ver playwright --version)" \
     --arg starship "$(get_tool_ver starship --version)" \
     --arg zoxide "$(get_tool_ver zoxide --version)" \
     --arg channel "${DEVBOX_RELEASE_CHANNEL:-stable}" \

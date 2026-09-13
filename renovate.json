@@ -17,18 +17,91 @@
       "customType": "regex",
       "fileMatch": ["^provisioning/versions\\.env$"],
       "matchStrings": [
-        "PNPM_VERSION=(?<currentValue>[0-9.]+)",
-        "CLAUDE_CODE_VERSION=(?<currentValue>[0-9.]+)",
-        "CODEX_VERSION=(?<currentValue>[0-9.]+)",
-        "OPENCODE_VERSION=(?<currentValue>[0-9.]+)",
-        "AST_GREP_VERSION=(?<currentValue>[0-9.]+)",
-        "AST_GREP_MCP_VERSION=(?<currentValue>[0-9.]+)",
-        "MCP_MEMORY_VERSION=(?<currentValue>[0-9.]+)",
-        "PLAYWRIGHT_MCP_VERSION=(?<currentValue>[0-9.]+)",
+        "NODE_MAJOR=(?<currentValue>\\d+)"
+      ],
+      "datasourceTemplate": "node-version",
+      "depNameTemplate": "node"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^provisioning/versions\\.env$"],
+      "matchStrings": [
+        "PNPM_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "pnpm"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^provisioning/versions\\.env$"],
+      "matchStrings": [
+        "CLAUDE_CODE_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "@anthropic-ai/claude-code"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^provisioning/versions\\.env$"],
+      "matchStrings": [
+        "CODEX_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "@openai/codex"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^provisioning/versions\\.env$"],
+      "matchStrings": [
+        "OPENCODE_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "opencode-ai"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^provisioning/versions\\.env$"],
+      "matchStrings": [
+        "AST_GREP_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "@ast-grep/cli"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^provisioning/versions\\.env$"],
+      "matchStrings": [
+        "AST_GREP_MCP_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "@notprolands/ast-grep-mcp"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^provisioning/versions\\.env$"],
+      "matchStrings": [
+        "MCP_MEMORY_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "@modelcontextprotocol/server-memory"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^provisioning/versions\\.env$"],
+      "matchStrings": [
+        "PLAYWRIGHT_MCP_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "@playwright/mcp"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^provisioning/versions\\.env$"],
+      "matchStrings": [
         "PLAYWRIGHT_VERSION=(?<currentValue>[0-9.]+)"
       ],
       "datasourceTemplate": "npm",
-      "depNameTemplate": "{{{replace '_VERSION' '' depName}}}"
+      "depNameTemplate": "playwright"
     },
     {
       "customType": "regex",

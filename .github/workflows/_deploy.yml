@@ -80,11 +80,6 @@ on:
         required: false
         type: string
         default: "stable"
-      agent_sandbox_strict:
-        description: Enable strict sandboxing for AI agents
-        required: false
-        type: boolean
-        default: true
 
 permissions:
   id-token: write
