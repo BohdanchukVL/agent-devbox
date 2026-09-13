@@ -431,7 +431,7 @@ jobs:
             if ssh "${SSH_OPTS[@]}" "$USER@$IP" 'test -f /etc/devbox/.failed' 2>/dev/null; then
               echo "❌ Provisioning failed."
               echo "::error::Provisioning failed — see logs below"
-              ssh "${SSH_OPTS[@]}" "$USER@$IP" 'cat /etc/devbox/.failed; echo "---"; tail -80 /var/log/devbox-install.log' 2>/dev/null || true
+              ssh "${SSH_OPTS[@]}" "$USER@$IP" 'sudo cat /etc/devbox/.failed 2>/dev/null || true; echo "---"; sudo tail -80 /var/log/devbox-install.log 2>/dev/null || sudo tail -80 /var/log/cloud-init-output.log 2>/dev/null || true' 2>/dev/null || true
               PROVISION_STATUS="failed"
               echo "status=failed" >> "$GITHUB_OUTPUT"
               exit 1
@@ -444,7 +444,7 @@ jobs:
 
           if [ "$PROVISION_STATUS" != "success" ]; then
             echo "::error::Provisioning timed out after 15 minutes"
-            ssh "${SSH_OPTS[@]}" "$USER@$IP" 'tail -40 /var/log/devbox-install.log' 2>/dev/null || true
+            ssh "${SSH_OPTS[@]}" "$USER@$IP" 'sudo tail -80 /var/log/devbox-install.log 2>/dev/null || sudo tail -80 /var/log/cloud-init-output.log 2>/dev/null || true' 2>/dev/null || true
             echo "status=timeout" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -463,8 +463,13 @@ jobs:
           SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -i "$SSH_KEY")
           echo '```' > /tmp/doctor-output.txt
           ssh "${SSH_OPTS[@]}" "$USER@$IP" 'sudo devbox-doctor --strict' 2>&1 | tee -a /tmp/doctor-output.txt
+          DOCTOR_EXIT="${PIPESTATUS[0]}"
           echo '```' >> /tmp/doctor-output.txt
           ssh "${SSH_OPTS[@]}" "$USER@$IP" 'sudo devbox-doctor --manifest' > /tmp/manifest.json 2>/dev/null || true
+          if [ "$DOCTOR_EXIT" -ne 0 ]; then
+            echo "::error::devbox-doctor --strict verification failed with exit code $DOCTOR_EXIT"
+            exit "$DOCTOR_EXIT"
+          fi
 
       # ── Cleanup runner access ───────────────────────────────────────────────
       - name: Cleanup runner access

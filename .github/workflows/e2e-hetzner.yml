@@ -27,7 +27,7 @@ jobs:
     with:
       cloud: hetzner
       location: nbg1
-      server_type: cx22
+      server_type: cx23
       disk_size: "0"
       name_prefix: agent-devbox-e2e-${{ github.run_id }}
       state_key: e2e/${{ github.run_id }}/terraform.tfstate

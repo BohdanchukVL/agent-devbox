@@ -28,6 +28,13 @@ PROVISIONING_SHA256="${PROVISIONING_SHA256:-}"
 PROVISIONING_TARBALL_URL="${PROVISIONING_TARBALL_URL:-}"
 PROVISIONING_SECRETS_URL="${PROVISIONING_SECRETS_URL:-}"
 
+# Unlock immutable security files if reprovisioning (WP-3C)
+chattr -i \
+  /etc/sudoers.d/90-devbox \
+  /etc/ssh/sshd_config.d/99-devbox.conf \
+  /etc/systemd/system/devbox-metadata-guard.service \
+  /usr/local/bin/devbox-doctor 2>/dev/null || true
+
 mkdir -p /opt/devbox /etc/devbox
 
 # Setup sudoers with audit and I/O logging (WP-3C)
@@ -37,6 +44,7 @@ $DEVBOX_USER ALL=(ALL) NOPASSWD:ALL
 Defaults:$DEVBOX_USER log_input, log_output, use_pty, iolog_dir=/var/log/sudo-io
 EOF
 chmod 0440 /etc/sudoers.d/90-devbox
+visudo -cf /etc/sudoers.d/90-devbox
 
 # Pull secrets from presigned URL (WP-3A)
 if [ -n "$PROVISIONING_SECRETS_URL" ]; then

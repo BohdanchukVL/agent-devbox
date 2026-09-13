@@ -268,6 +268,45 @@ if [ -f /etc/devbox/devbox.env ]; then
   fi
 fi
 
+# cloud-init instance cache: no secret leaks in obj.pkl
+if [ -f /var/lib/cloud/instance/obj.pkl ]; then
+  if (command -v strings >/dev/null 2>&1 && strings /var/lib/cloud/instance/obj.pkl 2>/dev/null || grep -a '' /var/lib/cloud/instance/obj.pkl 2>/dev/null) | grep -qiE '(tskey-[a-zA-Z0-9]+|DEVBOX_WEB_TOKEN)'; then
+    fail "Secrets detected in cloud-init instance cache (/var/lib/cloud/instance/obj.pkl)"
+  else
+    ok "Cloud-init obj.pkl free of Tailscale authkeys or web tokens"
+  fi
+fi
+
+# Bubblewrap unprivileged sandbox isolation check
+if command -v bwrap >/dev/null 2>&1; then
+  if bwrap --unshare-user --ro-bind / / -- sudo -n true 2>/dev/null; then
+    fail "bwrap setuid privilege escalation succeeded (expected failure in unprivileged userns)"
+  else
+    ok "bwrap sandbox prevents setuid privilege escalation"
+  fi
+fi
+
+# Docker metadata guard container egress check
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  if docker run --rm curlimages/curl -s -m 2 http://169.254.169.254/ >/dev/null 2>&1; then
+    fail "Docker container reached cloud metadata service (169.254.169.254)"
+  else
+    ok "Docker container blocked from cloud metadata endpoint (169.254.169.254)"
+  fi
+fi
+
+# Tailscale SSH check (RunSSH must be false to preserve native OpenSSH hardening)
+if command -v tailscale >/dev/null 2>&1; then
+  TS_PREFS=$(tailscale debug prefs 2>/dev/null || true)
+  if echo "$TS_PREFS" | grep -qiE 'RunSSH:.*true|"RunSSH":\s*true'; then
+    fail "Tailscale SSH is enabled (RunSSH: true) — native OpenSSH required"
+  elif echo "$TS_PREFS" | grep -qiE 'RunSSH:.*false|"RunSSH":\s*false'; then
+    ok "Tailscale SSH is disabled (RunSSH: false)"
+  else
+    warn "Tailscale installed but debug prefs not available (not logged in)"
+  fi
+fi
+
 # Display recent sudo audit log entries (WP-3C)
 echo ""
 echo "--- Recent sudo audit commands ---"

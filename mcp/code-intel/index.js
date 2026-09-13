@@ -66,8 +66,9 @@ function rebuildIndexInBackground(dir) {
   const proc = spawn('ctags', ctagsArgs, { stdio: ['ignore', 'pipe', 'ignore'], timeout: 30000 });
   let stdout = '';
   proc.stdout.on('data', chunk => { stdout += chunk; });
-  proc.on('close', () => {
+  proc.on('close', (code) => {
     _rebuildingDirs.delete(dir);
+    if (code !== 0) return;
     try {
       const tags = [];
       for (const line of stdout.split('\n').filter(Boolean)) {
@@ -81,7 +82,10 @@ function rebuildIndexInBackground(dir) {
       if (tags.length > 0) {
         fs.mkdirSync(CACHE_DIR, { recursive: true });
         const freshnessKey = getFreshnessKey(dir);
-        fs.writeFileSync(getCachePath(dir), JSON.stringify({ freshnessKey, tags }));
+        const cachePath = getCachePath(dir);
+        const tmpPath = `${cachePath}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+        fs.writeFileSync(tmpPath, JSON.stringify({ freshnessKey, tags }));
+        fs.renameSync(tmpPath, cachePath);
       }
     } catch {}
   });
@@ -116,7 +120,9 @@ function updateFileInCache(filePath, symbols) {
     }));
     data.tags = otherTags.concat(newTags);
     data.freshnessKey = getFreshnessKey(projectDir);
-    fs.writeFileSync(cachePath, JSON.stringify(data));
+    const tmpPath = `${cachePath}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(data));
+    fs.renameSync(tmpPath, cachePath);
   } catch {}
 }
 

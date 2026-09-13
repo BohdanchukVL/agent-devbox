@@ -51,6 +51,15 @@ on:
         description: Enable Hetzner automatic server backups
         type: boolean
         default: true
+      agent_sandbox_strict:
+        description: Enable strict unprivileged sandbox for Claude Code and Codex
+        type: boolean
+        default: true
+      release_channel:
+        description: Toolchain release channel ('stable' pins versions, 'latest' uses unpinned)
+        type: choice
+        default: stable
+        options: [stable, latest]
 
 concurrency: hetzner-devbox
 
@@ -74,4 +83,6 @@ jobs:
       install_antigravity: ${{ inputs.install_antigravity }}
       install_browser: ${{ inputs.install_browser }}
       ssh_allowed_cidrs: ${{ inputs.ssh_allowed_cidrs }}
+      agent_sandbox_strict: ${{ inputs.agent_sandbox_strict }}
+      release_channel: ${{ inputs.release_channel }}
     secrets: inherit
