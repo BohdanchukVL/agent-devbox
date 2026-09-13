@@ -56,7 +56,6 @@ if [ -n "$PROVISIONING_SECRETS_URL" ]; then
     # shellcheck source=/dev/null
     . /etc/devbox/secrets.env
     set +a
-    export TAILSCALE_AUTHKEY DEVBOX_WEB_TOKEN
     [ -n "${TAILSCALE_AUTHKEY:-}" ] && touch /etc/devbox/.tailscale_requested
     sed -i '/^PROVISIONING_SECRETS_URL=/d' /etc/devbox/devbox.env 2>/dev/null || true
     unset PROVISIONING_SECRETS_URL
@@ -184,9 +183,7 @@ if [ -f /etc/devbox/secrets.env ]; then
   shred -u /etc/devbox/secrets.env 2>/dev/null || rm -f /etc/devbox/secrets.env
 fi
 if [ -f /etc/devbox/devbox.env ]; then
-  sed -i '/^TAILSCALE_AUTHKEY=/d' /etc/devbox/devbox.env 2>/dev/null || true
-  sed -i '/^DEVBOX_WEB_TOKEN=/d' /etc/devbox/devbox.env 2>/dev/null || true
-  sed -i '/^PROVISIONING_SECRETS_URL=/d' /etc/devbox/devbox.env 2>/dev/null || true
+  sed -i -E '/(AUTHKEY|_TOKEN|SECRETS_URL)=/d' /etc/devbox/devbox.env 2>/dev/null || true
   chmod 0600 /etc/devbox/devbox.env
 fi
 
