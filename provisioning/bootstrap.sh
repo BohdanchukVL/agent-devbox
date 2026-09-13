@@ -26,8 +26,34 @@ PROVISIONING_REF="${PROVISIONING_REF:-main}"
 PROVISIONING_TOKEN="${PROVISIONING_TOKEN:-}"
 PROVISIONING_SHA256="${PROVISIONING_SHA256:-}"
 PROVISIONING_TARBALL_URL="${PROVISIONING_TARBALL_URL:-}"
+PROVISIONING_SECRETS_URL="${PROVISIONING_SECRETS_URL:-}"
 
 mkdir -p /opt/devbox /etc/devbox
+
+# Setup sudoers with audit and I/O logging (WP-3C)
+mkdir -p /var/log/sudo-io
+cat > /etc/sudoers.d/90-devbox <<EOF
+$DEVBOX_USER ALL=(ALL) NOPASSWD:ALL
+Defaults:$DEVBOX_USER log_input, log_output, use_pty, iolog_dir=/var/log/sudo-io
+EOF
+chmod 0440 /etc/sudoers.d/90-devbox
+
+# Pull secrets from presigned URL (WP-3A)
+if [ -n "$PROVISIONING_SECRETS_URL" ]; then
+  log "Fetching secrets payload from presigned URL..."
+  if curl -fsSL --retry 3 --retry-delay 2 "$PROVISIONING_SECRETS_URL" -o /etc/devbox/secrets.env; then
+    chmod 0600 /etc/devbox/secrets.env
+    set -a
+    # shellcheck source=/dev/null
+    . /etc/devbox/secrets.env
+    set +a
+    export TAILSCALE_AUTHKEY DEVBOX_WEB_TOKEN
+    sed -i '/^PROVISIONING_SECRETS_URL=/d' /etc/devbox/devbox.env 2>/dev/null || true
+    unset PROVISIONING_SECRETS_URL
+  else
+    log "WARNING: Failed to fetch secrets from presigned URL (continuing with local env)"
+  fi
+fi
 
 # Download & unpack repository if scripts not already staged
 if [ ! -f /opt/devbox/install-base.sh ] && [ ! -f /opt/devbox/provisioning/install-base.sh ]; then
@@ -104,6 +130,11 @@ if [ -f /opt/devbox/tmux-status.sh ]; then
   install -D -m 0755 -o "$DEVBOX_USER" -g "$DEVBOX_USER" /opt/devbox/tmux-status.sh "/home/$DEVBOX_USER/.devbox/bin/tmux-status"
 fi
 
+# Install devbox-doctor (smoke-test.sh) to PATH for readiness gate
+if [ -f /opt/devbox/smoke-test.sh ]; then
+  install -m 0755 /opt/devbox/smoke-test.sh /usr/local/bin/devbox-doctor
+fi
+
 if [ -f /opt/devbox/claude-statusline.sh ]; then
   install -D -m 0755 -o "$DEVBOX_USER" -g "$DEVBOX_USER" /opt/devbox/claude-statusline.sh "/home/$DEVBOX_USER/.devbox/bin/claude-statusline"
 fi
@@ -137,9 +168,13 @@ log "Executing install-shell.sh..."
 chown -R "$DEVBOX_USER:$DEVBOX_USER" "/home/$DEVBOX_USER" 2>/dev/null || true
 
 # Post-provisioning secret scrubbing: remove remaining auth keys from environment
+if [ -f /etc/devbox/secrets.env ]; then
+  shred -u /etc/devbox/secrets.env 2>/dev/null || rm -f /etc/devbox/secrets.env
+fi
 if [ -f /etc/devbox/devbox.env ]; then
   sed -i '/^TAILSCALE_AUTHKEY=/d' /etc/devbox/devbox.env 2>/dev/null || true
   sed -i '/^DEVBOX_WEB_TOKEN=/d' /etc/devbox/devbox.env 2>/dev/null || true
+  sed -i '/^PROVISIONING_SECRETS_URL=/d' /etc/devbox/devbox.env 2>/dev/null || true
   chmod 0600 /etc/devbox/devbox.env
 fi
 
@@ -147,12 +182,132 @@ fi
 find /var/lib/cloud -name "user-data.txt" -exec shred -u {} + 2>/dev/null || true
 chmod 0600 /var/log/cloud-init*.log /var/log/devbox-*.log 2>/dev/null || true
 
-# Restrict cloud instance metadata endpoint (169.254.169.254) to root only
-# Prevents unprivileged/compromised agent sessions from querying instance metadata or tokens
-if command -v iptables >/dev/null 2>&1; then
-  iptables -C OUTPUT -m owner ! --uid-owner 0 -d 169.254.169.254 -j DROP 2>/dev/null || \
-    iptables -A OUTPUT -m owner ! --uid-owner 0 -d 169.254.169.254 -j DROP 2>/dev/null || true
+# Install and enable persistent metadata guard (F-05: OUTPUT + DOCKER-USER, IPv4 + IPv6)
+if [ -f /opt/devbox/devbox-metadata-guard.sh ]; then
+  install -m 0755 /opt/devbox/devbox-metadata-guard.sh /usr/local/bin/devbox-metadata-guard
+
+  cat > /etc/systemd/system/devbox-metadata-guard.service <<'UNIT'
+[Unit]
+Description=Block cloud metadata endpoint for non-root
+Before=network.target
+After=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/devbox-metadata-guard
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+  # Docker drop-in: ensure metadata guard runs after Docker starts to protect DOCKER-USER chain
+  mkdir -p /etc/systemd/system/docker.service.d
+  cat > /etc/systemd/system/docker.service.d/devbox-guard.conf <<'UNIT'
+[Unit]
+Wants=devbox-metadata-guard.service
+After=devbox-metadata-guard.service
+
+[Service]
+ExecStartPost=/usr/local/bin/devbox-metadata-guard
+UNIT
+
+  systemctl daemon-reload
+  systemctl enable --now devbox-metadata-guard.service 2>/dev/null || \
+    /usr/local/bin/devbox-metadata-guard
+else
+  # Fallback: inline guard
+  if command -v iptables >/dev/null 2>&1; then
+    iptables -C OUTPUT -m owner ! --uid-owner 0 -d 169.254.169.254 -j DROP 2>/dev/null || \
+      iptables -A OUTPUT -m owner ! --uid-owner 0 -d 169.254.169.254 -j DROP 2>/dev/null || true
+  fi
 fi
+
+# Write system integrity baseline hash before making files immutable (WP-3C)
+sha256sum \
+  /etc/sudoers.d/90-devbox \
+  /etc/ssh/sshd_config.d/99-devbox.conf \
+  /etc/systemd/system/devbox-metadata-guard.service \
+  /usr/local/bin/devbox-doctor \
+  > /etc/devbox/integrity.sha256 2>/dev/null || true
+chmod 0644 /etc/devbox/integrity.sha256 2>/dev/null || true
+
+# Generate manifest of installed versions (WP-4, F-12)
+if command -v jq >/dev/null 2>&1; then
+  log "Generating installed version manifest (/etc/devbox/manifest.json)..."
+  U="$DEVBOX_USER"
+  H="/home/$U"
+  NPM_BIN="$H/.npm-global/bin"
+  LOCAL_BIN="$H/.local/bin"
+
+  get_tool_ver() {
+    local out
+    out=$("$@" 2>/dev/null | head -n1) || true
+    if [ -n "$out" ]; then
+      echo "$out"
+    else
+      echo "not installed"
+    fi
+  }
+
+  get_user_tool_ver() {
+    local out
+    out=$(sudo -u "$U" -H env PATH="$NPM_BIN:$LOCAL_BIN:/usr/local/bin:/usr/bin:/bin:$PATH" "$@" 2>/dev/null | head -n1) || true
+    if [ -n "$out" ]; then
+      echo "$out"
+    else
+      echo "not installed"
+    fi
+  }
+
+  jq -n \
+    --arg node "$(get_tool_ver node -v)" \
+    --arg npm "$(get_tool_ver npm -v)" \
+    --arg pnpm "$(get_tool_ver pnpm -v)" \
+    --arg docker "$(get_tool_ver docker --version)" \
+    --arg tailscale "$(get_tool_ver tailscale version)" \
+    --arg tmux "$(get_tool_ver tmux -V)" \
+    --arg codex "$(get_user_tool_ver codex --version)" \
+    --arg claude "$(get_user_tool_ver claude --version)" \
+    --arg opencode "$(get_user_tool_ver opencode --version)" \
+    --arg agy "$(get_user_tool_ver agy --version)" \
+    --arg playwright "$(get_user_tool_ver playwright --version)" \
+    --arg starship "$(get_tool_ver starship --version)" \
+    --arg zoxide "$(get_tool_ver zoxide --version)" \
+    --arg channel "${DEVBOX_RELEASE_CHANNEL:-stable}" \
+    --arg payload_ref "${PROVISIONING_REF:-main}" \
+    --arg created_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+    '{
+      release_channel: $channel,
+      payload_ref: $payload_ref,
+      created_at: $created_at,
+      tools: {
+        node: $node,
+        npm: $npm,
+        pnpm: $pnpm,
+        docker: $docker,
+        tailscale: $tailscale,
+        tmux: $tmux,
+        starship: $starship,
+        zoxide: $zoxide
+      },
+      agents: {
+        codex: $codex,
+        claude: $claude,
+        opencode: $opencode,
+        antigravity: $agy,
+        playwright: $playwright
+      }
+    }' > /etc/devbox/manifest.json
+  chmod 0644 /etc/devbox/manifest.json
+fi
+
+# Mark security configs immutable to prevent accidental tampering (WP-3C)
+chattr +i \
+  /etc/sudoers.d/90-devbox \
+  /etc/ssh/sshd_config.d/99-devbox.conf \
+  /etc/systemd/system/devbox-metadata-guard.service \
+  /usr/local/bin/devbox-doctor 2>/dev/null || true
 
 # Execute readiness smoke tests before declaring completion
 if [ -x /opt/devbox/smoke-test.sh ]; then

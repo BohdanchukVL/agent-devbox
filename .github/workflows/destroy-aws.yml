@@ -4,10 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       confirm:
-        description: Type "destroy" to confirm deleting the instance and its data
+        description: Type "destroy" to confirm deleting all AWS resources
         required: true
       region:
-        description: Region the devbox was deployed to
+        description: Region where the devbox is deployed
         required: true
         type: choice
         default: eu-central-1
@@ -21,70 +21,9 @@ permissions:
 
 jobs:
   destroy:
-    runs-on: ubuntu-latest
-    env:
-      TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
-      HAS_ROLE: ${{ secrets.AWS_ROLE_ARN != '' }}
-
-    steps:
-      - name: Check confirmation
-        if: inputs.confirm != 'destroy'
-        run: |
-          echo '::error::Confirmation failed — type "destroy" in the confirm field.'
-          exit 1
-
-      - uses: actions/checkout@v4
-
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_wrapper: false
-
-      - name: Configure AWS credentials (OIDC role)
-        if: env.HAS_ROLE == 'true'
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ inputs.region }}
-
-      - name: Configure AWS credentials (access keys)
-        if: env.HAS_ROLE != 'true'
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ inputs.region }}
-
-      - name: Locate state backend
-        id: state
-        run: |
-          OWNER=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
-          REPO_HASH=$(echo -n "$GITHUB_REPOSITORY" | sha256sum | cut -c1-8)
-          OLD_BUCKET="tfstate-agent-devbox-$OWNER"
-          NEW_BUCKET="tfstate-agent-devbox-$OWNER-$REPO_HASH"
-          if aws s3api head-bucket --bucket "$OLD_BUCKET" 2>/dev/null; then
-            BUCKET="$OLD_BUCKET"
-          else
-            BUCKET="$NEW_BUCKET"
-          fi
-          LOC=$(aws s3api get-bucket-location --bucket "$BUCKET" --query LocationConstraint --output text 2>/dev/null || echo "None")
-          if [ "$LOC" = "None" ] || [ "$LOC" = "null" ]; then
-            LOC="us-east-1"
-          fi
-          echo "bucket=$BUCKET"     >> "$GITHUB_OUTPUT"
-          echo "bucket_region=$LOC" >> "$GITHUB_OUTPUT"
-
-      - name: Terraform init
-        working-directory: terraform/aws
-        run: |
-          terraform init \
-            -backend-config="bucket=${{ steps.state.outputs.bucket }}" \
-            -backend-config="key=aws/terraform.tfstate" \
-            -backend-config="region=${{ steps.state.outputs.bucket_region }}" \
-            -backend-config="use_lockfile=true"
-
-      - name: Terraform destroy
-        working-directory: terraform/aws
-        run: terraform destroy -auto-approve -var="region=${{ inputs.region }}"
-
-      - name: Summary
-        run: echo "## 🗑️ AWS environment destroyed" >> "$GITHUB_STEP_SUMMARY"
+    uses: ./.github/workflows/_destroy.yml
+    with:
+      cloud: aws
+      location: ${{ inputs.region }}
+      confirm: ${{ inputs.confirm }}
+    secrets: inherit

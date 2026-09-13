@@ -92,3 +92,13 @@ Re-runs update the existing machine.
 Connect exactly as in the workflow summary (`ssh dev@<ip>`). Destroy via
 *Actions → Destroy AWS environment* → type `destroy`, and pick the region you
 deployed to. The state bucket is kept.
+
+## Verification & testing
+
+In CI, the AWS module is verified via `terraform fmt`, `terraform validate`, and
+`terraform test` using mock providers (`terraform/aws/tests/plan.tftest.hcl`).
+Tests assert that all `devbox.env` variables are generated, port 22 is closed
+when Tailscale is configured without fallback CIDRs, and configuration changes
+propagate to replacement triggers. Full live E2E runs on Hetzner; live AWS E2E
+can be enabled once AWS credentials or OIDC roles are configured.
+

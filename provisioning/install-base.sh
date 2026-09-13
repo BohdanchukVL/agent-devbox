@@ -7,6 +7,8 @@ export DEBIAN_FRONTEND=noninteractive
 
 # shellcheck source=/dev/null
 . /etc/devbox/devbox.env
+# shellcheck source=/dev/null
+. /opt/devbox/versions.env 2>/dev/null || . /opt/devbox/provisioning/versions.env 2>/dev/null || true
 
 log() { echo "[devbox $(date -u +%H:%M:%S)] $*"; }
 
@@ -58,25 +60,55 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubc
 apt-get update -y
 apt-get install -y gh
 
-log "installing Node.js 22 + pnpm"
-curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+pin() {
+  local var_name="$1"
+  local fallback="${2:-latest}"
+  if [ "${DEVBOX_RELEASE_CHANNEL:-stable}" = "stable" ]; then
+    echo "${!var_name:-$fallback}"
+  else
+    echo "latest"
+  fi
+}
+
+log "installing Node.js ${NODE_MAJOR:-22} + pnpm $(pin PNPM_VERSION 9.15.9)"
+curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR:-22}.x" | bash -
 apt-get install -y nodejs
-npm install -g pnpm
+npm install -g "pnpm@$(pin PNPM_VERSION 9.15.9)"
 
 if [ "$INSTALL_DOCKER" = "true" ]; then
   log "installing Docker"
-  env -u TAILSCALE_AUTHKEY -u PROVISIONING_TOKEN sh -c 'curl -fsSL https://get.docker.com | sh' || log "warning: docker installation failed (continuing)"
+  mkdir -p /etc/docker
+  if [ ! -f /etc/docker/daemon.json ]; then
+    cat > /etc/docker/daemon.json <<'EOF'
+{
+  "no-new-privileges": true
+}
+EOF
+  fi
+  DOCKER_VER=$(pin DOCKER_VERSION "")
+  if [ -n "$DOCKER_VER" ] && [ "$DOCKER_VER" != "latest" ]; then
+    env -u TAILSCALE_AUTHKEY -u PROVISIONING_TOKEN VERSION="$DOCKER_VER" sh -c 'curl -fsSL https://get.docker.com | sh' || log "warning: docker installation failed (continuing)"
+  else
+    env -u TAILSCALE_AUTHKEY -u PROVISIONING_TOKEN sh -c 'curl -fsSL https://get.docker.com | sh' || log "warning: docker installation failed (continuing)"
+  fi
   usermod -aG docker "$DEVBOX_USER" 2>/dev/null || true
   systemctl enable --now docker 2>/dev/null || true
 fi
 
 log "installing Tailscale"
 if curl -fsSL https://tailscale.com/install.sh | sh; then
+  TS_VER=$(pin TAILSCALE_VERSION "")
+  if [ -n "$TS_VER" ] && [ "$TS_VER" != "latest" ]; then
+    apt-get install -y --allow-downgrades "tailscale=$TS_VER" 2>/dev/null || true
+  fi
   if [ -n "${TAILSCALE_AUTHKEY:-}" ]; then
     log "joining Tailscale network"
-    if ! tailscale up --authkey="${TAILSCALE_AUTHKEY}" --ssh --hostname="agent-devbox"; then
+    if ! tailscale up --authkey="${TAILSCALE_AUTHKEY}" --hostname="agent-devbox"; then
       log "WARNING: Tailscale join failed (check auth key)"
       touch /etc/devbox/.failed_tailscale
+    else
+      # Allow unprivileged dev user to manage tailscale serve without sudo (WP-3D)
+      tailscale set --operator="$DEVBOX_USER" 2>/dev/null || true
     fi
   fi
 else

@@ -1,29 +1,33 @@
+module "core" {
+  source = "../modules/devbox-core"
+
+  username              = var.username
+  instance_type         = var.server_type
+  ssh_public_key        = var.ssh_public_key
+  runner_ssh_public_key = var.runner_ssh_public_key
+  install_docker        = var.install_docker
+  install_codex         = var.install_codex
+  install_claude        = var.install_claude
+  install_opencode      = var.install_opencode
+  install_antigravity   = var.install_antigravity
+  install_browser       = var.install_browser
+  tailscale_authkey     = var.tailscale_authkey
+  workspace_device      = local.use_volume ? "/dev/disk/by-id/scsi-0HC_Volume_${hcloud_volume.workspace[0].id}" : ""
+  git_repo              = var.git_repo
+  git_ref               = var.git_ref
+  git_sha256            = var.git_sha256
+  tarball_url           = var.tarball_url
+  web_token             = var.web_token
+  ssh_allowed_cidrs     = var.ssh_allowed_cidrs
+  secrets_url           = var.secrets_url
+  agent_sandbox_strict  = var.agent_sandbox_strict
+  release_channel       = var.release_channel
+}
+
 locals {
   use_volume = var.disk_size > 0
-
-  ssh_cidrs = var.ssh_allowed_cidrs != null ? var.ssh_allowed_cidrs : (
-    var.tailscale_authkey != "" ? [] : ["0.0.0.0/0", "::/0"]
-  )
-
-  user_data = templatefile("${path.module}/../../provisioning/cloud-init.yaml", {
-    username            = var.username
-    ssh_public_key      = var.ssh_public_key
-    install_docker      = var.install_docker
-    install_codex       = var.install_codex
-    install_claude      = var.install_claude
-    install_opencode    = var.install_opencode
-    install_antigravity = var.install_antigravity
-    install_browser     = var.install_browser
-    tailscale_authkey   = var.tailscale_authkey
-    workspace_device    = local.use_volume ? "/dev/disk/by-id/scsi-0HC_Volume_${hcloud_volume.workspace[0].id}" : ""
-    bootstrap_script    = file("${path.module}/../../provisioning/bootstrap.sh")
-    git_repo            = var.git_repo
-    git_ref             = var.git_ref
-    git_token           = var.git_token
-    git_sha256          = var.git_sha256
-    tarball_url         = var.tarball_url
-    web_token           = var.web_token
-  })
+  ssh_cidrs  = module.core.ssh_cidrs
+  user_data  = module.core.user_data
 }
 
 resource "hcloud_ssh_key" "this" {
@@ -71,11 +75,7 @@ resource "hcloud_volume" "workspace" {
 }
 
 resource "terraform_data" "payload" {
-  input = join(":", [
-    var.git_ref, var.server_type, var.install_docker, var.install_codex, var.install_claude,
-    var.install_opencode, var.install_antigravity, var.install_browser, var.username,
-    sha256(var.ssh_public_key), sha256(var.tailscale_authkey), sha256(var.web_token),
-  ])
+  input = module.core.replace_triggers
 }
 
 resource "hcloud_server" "this" {
@@ -85,6 +85,7 @@ resource "hcloud_server" "this" {
   image        = "ubuntu-24.04"
   ssh_keys     = [hcloud_ssh_key.this.id]
   firewall_ids = [hcloud_firewall.this.id]
+  labels       = module.core.labels
   user_data    = local.user_data
   backups      = var.backups
 

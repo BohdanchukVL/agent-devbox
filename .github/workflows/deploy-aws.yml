@@ -51,183 +51,22 @@ on:
 concurrency: aws-devbox
 
 permissions:
-  id-token: write # OIDC auth mode
+  id-token: write
   contents: read
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
-    env:
-      TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
-      TF_VAR_tailscale_authkey: ${{ secrets.TAILSCALE_AUTHKEY || secrets.TAILSCALE_AUTH_KEY }}
-      HAS_ROLE: ${{ secrets.AWS_ROLE_ARN != '' }}
-      # Free-form input — pass via env, never interpolate into a run: script.
-      DISK_SIZE: ${{ inputs.disk_size }}
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Validate SSH public key
-        run: |
-          if ! ssh-keygen -l -f /dev/stdin <<< "$TF_VAR_ssh_public_key" >/dev/null 2>&1; then
-            echo '::error::SSH_PUBLIC_KEY is not a valid OpenSSH public key — expected one line ("ssh-ed25519 AAAA…" / "ssh-rsa AAAA…"), i.e. the contents of your .pub file, not the private key.'
-            exit 1
-          fi
-
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_wrapper: false
-
-      - name: Configure AWS credentials (OIDC role)
-        if: env.HAS_ROLE == 'true'
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ inputs.region }}
-
-      - name: Configure AWS credentials (access keys)
-        if: env.HAS_ROLE != 'true'
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ inputs.region }}
-
-      - name: Bootstrap state backend
-        id: state
-        run: |
-          OWNER=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
-          REPO_HASH=$(echo -n "$GITHUB_REPOSITORY" | sha256sum | cut -c1-8)
-          OLD_BUCKET="tfstate-agent-devbox-$OWNER"
-          NEW_BUCKET="tfstate-agent-devbox-$OWNER-$REPO_HASH"
-          if aws s3api head-bucket --bucket "$OLD_BUCKET" 2>/dev/null; then
-            BUCKET="$OLD_BUCKET"
-          elif aws s3api head-bucket --bucket "$NEW_BUCKET" 2>/dev/null; then
-            BUCKET="$NEW_BUCKET"
-          else
-            BUCKET="$NEW_BUCKET"
-          fi
-
-          if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
-            # Bucket already exists — the backend must use ITS region, which
-            # may differ from the deploy region.
-            LOC=$(aws s3api get-bucket-location --bucket "$BUCKET" --query LocationConstraint --output text)
-            if [ "$LOC" = "None" ] || [ "$LOC" = "null" ]; then
-              LOC="us-east-1"
-            fi
-          else
-            LOC="${{ inputs.region }}"
-            echo "Creating state bucket $BUCKET in $LOC"
-            if [ "$LOC" = "us-east-1" ]; then
-              aws s3api create-bucket --bucket "$BUCKET"
-            else
-              aws s3api create-bucket --bucket "$BUCKET" \
-                --create-bucket-configuration "LocationConstraint=$LOC"
-            fi
-            aws s3api put-bucket-versioning --bucket "$BUCKET" \
-              --versioning-configuration Status=Enabled
-            aws s3api put-public-access-block --bucket "$BUCKET" \
-              --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
-          fi
-          echo "bucket=$BUCKET"      >> "$GITHUB_OUTPUT"
-          echo "bucket_region=$LOC"  >> "$GITHUB_OUTPUT"
-
-      - name: Configure SSH ingress CIDRs
-        if: inputs.ssh_allowed_cidrs != ''
-        env:
-          SSH_ALLOWED_CIDRS: ${{ inputs.ssh_allowed_cidrs }}
-        run: |
-          JSON_CIDRS=$(echo "$SSH_ALLOWED_CIDRS" | tr ',' '\n' | sed 's/^[ \t]*//;s/[ \t]*$//' | jq -R . | jq -s . -c)
-          echo "TF_VAR_ssh_allowed_cidrs=$JSON_CIDRS" >> "$GITHUB_ENV"
-
-      - name: Package and stage provisioning payload
-        id: payload
-        run: |
-          # Tree hash of provisioning, mcp, and web is deterministic and works on shallow clones
-          PAYLOAD_REF=$(git rev-parse HEAD:provisioning HEAD:mcp HEAD:web | sha256sum | cut -c1-16)
-          echo "payload_ref=$PAYLOAD_REF" >> "$GITHUB_OUTPUT"
-
-          # Deterministic tarball (reproducible sorting, mtime, ownership, and gzip)
-          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - provisioning mcp web | gzip -n > /tmp/devbox-payload.tar.gz
-          PAYLOAD_SHA=$(sha256sum /tmp/devbox-payload.tar.gz | cut -d' ' -f1)
-          echo "sha256=$PAYLOAD_SHA" >> "$GITHUB_OUTPUT"
-
-          BUCKET="${{ steps.state.outputs.bucket }}"
-          BUCKET_REGION="${{ steps.state.outputs.bucket_region }}"
-
-          # Upload payload and generate a fresh presigned URL for this deployment run
-          aws s3 cp /tmp/devbox-payload.tar.gz "s3://$BUCKET/payloads/$PAYLOAD_REF.tar.gz"
-          TARBALL_URL=$(aws s3 presign "s3://$BUCKET/payloads/$PAYLOAD_REF.tar.gz" --expires-in 3600 --region "$BUCKET_REGION")
-          echo "tarball_url=$TARBALL_URL" >> "$GITHUB_OUTPUT"
-
-      - name: Terraform init
-        working-directory: terraform/aws
-        run: |
-          terraform init \
-            -backend-config="bucket=${{ steps.state.outputs.bucket }}" \
-            -backend-config="key=aws/terraform.tfstate" \
-            -backend-config="region=${{ steps.state.outputs.bucket_region }}" \
-            -backend-config="use_lockfile=true"
-
-      - name: Terraform apply
-        working-directory: terraform/aws
-        run: |
-          terraform apply -auto-approve \
-            -var="region=${{ inputs.region }}" \
-            -var="instance_type=${{ inputs.instance_type }}" \
-            -var="disk_size=$DISK_SIZE" \
-            -var="install_docker=${{ inputs.install_docker }}" \
-            -var="install_codex=${{ inputs.install_codex }}" \
-            -var="install_claude=${{ inputs.install_claude }}" \
-            -var="install_opencode=${{ inputs.install_opencode }}" \
-            -var="install_antigravity=${{ inputs.install_antigravity }}" \
-            -var="install_browser=${{ inputs.install_browser }}" \
-            -var="tarball_url=${{ steps.payload.outputs.tarball_url }}" \
-            -var="git_sha256=${{ steps.payload.outputs.sha256 }}" \
-            -var="git_ref=${{ steps.payload.outputs.payload_ref }}"
-
-      - name: Deployment summary
-        working-directory: terraform/aws
-        env:
-          SSH_ALLOWED_CIDRS: ${{ inputs.ssh_allowed_cidrs }}
-        run: |
-          IP=$(terraform output -raw public_ip)
-          USER=$(terraform output -raw username)
-          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
-          ## ✅ Deployment completed
-
-          | | |
-          |---|---|
-          | **IP** | \`$IP\` |
-          | **User** | \`$USER\` |
-          | **Instance** | ${{ inputs.instance_type }} @ ${{ inputs.region }} |
-
-          Connect:
-
-          \`\`\`bash
-          ssh $USER@$IP
-          # Or via Tailscale (if auth key configured):
-          ssh $USER@agent-devbox
-          \`\`\`
-
-          Provisioning keeps running for a few minutes after boot — the MOTD
-          shows live status. Then authenticate your agents:
-
-          \`\`\`bash
-          gh auth login
-          git config --global user.name  "Your Name"
-          git config --global user.email "you@example.com"
-          codex login --device-auth
-          claude
-          agy
-          \`\`\`
-          EOF
-
-          if [ -n "$TF_VAR_tailscale_authkey" ] && [ -z "$SSH_ALLOWED_CIDRS" ]; then
-            cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
-
-          > [!WARNING]
-          > **Port 22 is closed to the public internet** because a Tailscale auth key was configured without fallback CIDRs (`ssh_allowed_cidrs`).
-          > Ensure your Tailnet node authenticates successfully. If Tailscale fails, this server cannot be reached via SSH.
-          EOF
-          fi
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      cloud: aws
+      location: ${{ inputs.region }}
+      server_type: ${{ inputs.instance_type }}
+      disk_size: ${{ inputs.disk_size }}
+      install_docker: ${{ inputs.install_docker }}
+      install_codex: ${{ inputs.install_codex }}
+      install_claude: ${{ inputs.install_claude }}
+      install_opencode: ${{ inputs.install_opencode }}
+      install_antigravity: ${{ inputs.install_antigravity }}
+      install_browser: ${{ inputs.install_browser }}
+      ssh_allowed_cidrs: ${{ inputs.ssh_allowed_cidrs }}
+    secrets: inherit

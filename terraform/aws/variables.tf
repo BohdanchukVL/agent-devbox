@@ -90,13 +90,6 @@ variable "git_ref" {
   default     = "main"
 }
 
-variable "git_token" {
-  description = "GitHub personal access token for private repository provisioning payload"
-  type        = string
-  default     = ""
-  sensitive   = true
-}
-
 variable "git_sha256" {
   description = "Optional SHA256 checksum to verify provisioning payload archive"
   type        = string
@@ -114,5 +107,30 @@ variable "web_token" {
   type        = string
   default     = ""
   sensitive   = true
+}
+
+variable "runner_ssh_public_key" {
+  description = "Ephemeral SSH public key for CI runner readiness gate (added during deploy, removed after)"
+  type        = string
+  default     = ""
+}
+
+variable "secrets_url" {
+  description = "Presigned URL for secrets.env payload (WP-3A)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "agent_sandbox_strict" {
+  description = "Enable strict sandboxing for AI agents (WP-3B)"
+  type        = bool
+  default     = true
+}
+
+variable "release_channel" {
+  description = "Release channel for toolchains: 'stable' or 'latest' (WP-4)"
+  type        = string
+  default     = "stable"
 }
 

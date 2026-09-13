@@ -1,0 +1,176 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "schedule": ["before 8am on monday"],
+  "timezone": "UTC",
+  "prConcurrentLimit": 5,
+  "rebaseWhen": "auto",
+  "labels": ["dependencies"],
+  "enabledManagers": [
+    "npm",
+    "cargo",
+    "github-actions",
+    "custom.regex"
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "fileMatch": ["^provisioning/versions\\.env$"],
+      "matchStrings": [
+        "NODE_MAJOR=(?<currentValue>\\d+)"
+      ],
+      "datasourceTemplate": "node-version",
+      "depNameTemplate": "node"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^provisioning/versions\\.env$"],
+      "matchStrings": [
+        "PNPM_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "pnpm"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^provisioning/versions\\.env$"],
+      "matchStrings": [
+        "CLAUDE_CODE_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "@anthropic-ai/claude-code"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^provisioning/versions\\.env$"],
+      "matchStrings": [
+        "CODEX_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "@openai/codex"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^provisioning/versions\\.env$"],
+      "matchStrings": [
+        "OPENCODE_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "opencode-ai"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^provisioning/versions\\.env$"],
+      "matchStrings": [
+        "AST_GREP_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "@ast-grep/cli"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^provisioning/versions\\.env$"],
+      "matchStrings": [
+        "AST_GREP_MCP_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "@notprolands/ast-grep-mcp"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^provisioning/versions\\.env$"],
+      "matchStrings": [
+        "MCP_MEMORY_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "@modelcontextprotocol/server-memory"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^provisioning/versions\\.env$"],
+      "matchStrings": [
+        "PLAYWRIGHT_MCP_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "@playwright/mcp"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^provisioning/versions\\.env$"],
+      "matchStrings": [
+        "PLAYWRIGHT_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "playwright"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^provisioning/versions\\.env$"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>[a-z-]+?) depName=(?<depName>.+?)(?: versioning=(?<versioning>[a-z-]+?))?\\n[A-Z_]+=(?<currentValue>\\S+)"
+      ]
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^provisioning/versions\\.env$"],
+      "matchStrings": [
+        "STARSHIP_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "starship/starship"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^provisioning/versions\\.env$"],
+      "matchStrings": [
+        "LAZYGIT_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "jesseduffield/lazygit"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^provisioning/versions\\.env$"],
+      "matchStrings": [
+        "YQ_VERSION=(?<currentValue>v[0-9.]+)"
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "mikefarah/yq"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^provisioning/versions\\.env$"],
+      "matchStrings": [
+        "TAILSCALE_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "tailscale/tailscale"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^provisioning/versions\\.env$"],
+      "matchStrings": [
+        "DOCKER_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "moby/moby"
+    }
+  ],
+  "packageRules": [
+    {
+      "matchFileNames": ["provisioning/versions.env"],
+      "groupName": "devbox pins",
+      "automerge": false
+    },
+    {
+      "matchFileNames": ["**/package-lock.json", "**/Cargo.lock"],
+      "matchUpdateTypes": ["patch"],
+      "automerge": true,
+      "automergeType": "pr"
+    },
+    {
+      "matchDepTypes": ["action"],
+      "groupName": "github-actions"
+    }
+  ]
+}

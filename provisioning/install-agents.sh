@@ -8,6 +8,8 @@ trap 'touch /etc/devbox/.failed 2>/dev/null || true' ERR
 
 # shellcheck source=/dev/null
 . /etc/devbox/devbox.env
+# shellcheck source=/dev/null
+. /opt/devbox/versions.env 2>/dev/null || . /opt/devbox/provisioning/versions.env 2>/dev/null || true
 U="$DEVBOX_USER"
 H="/home/$U"
 PREFIX="$H/.npm-global"
@@ -26,6 +28,16 @@ install -m 0644 -o "$U" -g "$U" /dev/null "$H/.zshenv"
 # shellcheck disable=SC2016
 echo 'export PATH="$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"' >> "$H/.zshenv"
 
+pin() {
+  local var_name="$1"
+  local fallback="${2:-latest}"
+  if [ "${DEVBOX_RELEASE_CHANNEL:-stable}" = "stable" ]; then
+    echo "${!var_name:-$fallback}"
+  else
+    echo "latest"
+  fi
+}
+
 # install as dev so files land in the dev-owned prefix (npm reads ~/.npmrc)
 agent() {
   log "installing npm package(s): $*"
@@ -35,17 +47,17 @@ agent() {
 if [ "$INSTALL_CODEX" = "true" ]; then
   log "installing Codex CLI"
   which bwrap >/dev/null 2>&1 || apt-get install -y --no-install-recommends bubblewrap || true
-  agent @openai/codex
+  agent "@openai/codex@$(pin CODEX_VERSION latest)"
 fi
 
 if [ "$INSTALL_CLAUDE" = "true" ]; then
   log "installing Claude Code"
-  agent @anthropic-ai/claude-code
+  agent "@anthropic-ai/claude-code@$(pin CLAUDE_CODE_VERSION latest)"
 fi
 
 if [ "$INSTALL_OPENCODE" = "true" ]; then
   log "installing OpenCode"
-  agent opencode-ai
+  agent "opencode-ai@$(pin OPENCODE_VERSION latest)"
 fi
 
 if [ "${INSTALL_ANTIGRAVITY:-false}" = "true" ]; then
@@ -58,7 +70,10 @@ if [ "${INSTALL_ANTIGRAVITY:-false}" = "true" ]; then
 fi
 
 log "installing code intelligence and MCP tools"
-agent @ast-grep/cli @notprolands/ast-grep-mcp @modelcontextprotocol/server-memory @playwright/mcp
+agent "@ast-grep/cli@$(pin AST_GREP_VERSION 0.38.1)" \
+  "@notprolands/ast-grep-mcp@$(pin AST_GREP_MCP_VERSION 0.1.7)" \
+  "@modelcontextprotocol/server-memory@$(pin MCP_MEMORY_VERSION 0.6.2)" \
+  "@playwright/mcp@$(pin PLAYWRIGHT_MCP_VERSION 0.0.32)"
 
 # Setup devbox-code-intel MCP server
 install -d -o "$U" -g "$U" "$H/.devbox/mcp/code-intel"
@@ -122,22 +137,46 @@ fi
 # idle sessions current (seconds).
 STATUSLINE_BIN="$H/.devbox/bin/claude-statusline"
 install -d -o "$U" -g "$U" "$H/.claude"
-if [ -f "$H/.claude/settings.json" ] && jq -e . "$H/.claude/settings.json" >/dev/null 2>&1; then
-  jq --arg cmd "$STATUSLINE_BIN" '.statusLine = {"type": "command", "command": $cmd, "refreshInterval": 30}' \
-    "$H/.claude/settings.json" > "$H/.claude/settings.json.tmp" && mv "$H/.claude/settings.json.tmp" "$H/.claude/settings.json"
-else
-  cat > "$H/.claude/settings.json" <<EOF
-{
-  "statusLine": {
-    "type": "command",
-    "command": "$STATUSLINE_BIN",
-    "refreshInterval": 30
-  }
-}
-EOF
+# Configure Claude Code settings (statusLine hook + strict sandbox WP-3B via jq merge)
+STRICT_SANDBOX="${AGENT_SANDBOX_STRICT:-true}"
+ALLOWED_DOMAINS='["registry.npmjs.org","github.com","api.github.com","objects.githubusercontent.com","crates.io","static.crates.io","pypi.org","files.pythonhosted.org","proxy.golang.org"]'
+
+SETTINGS_FILE="$H/.claude/settings.json"
+if [ ! -f "$SETTINGS_FILE" ] || ! jq -e . "$SETTINGS_FILE" >/dev/null 2>&1; then
+  echo "{}" > "$SETTINGS_FILE"
 fi
-chown "$U:$U" "$H/.claude/settings.json"
+
+TMP_SETTINGS=$(mktemp)
+jq --arg cmd "$STATUSLINE_BIN" \
+   --argjson strict "$([ "$STRICT_SANDBOX" = "false" ] && echo "false" || echo "true")" \
+   --argjson domains "$ALLOWED_DOMAINS" \
+   '.statusLine = {"type": "command", "command": $cmd, "refreshInterval": 30} |
+    .sandbox = {
+      "enabled": true,
+      "failIfUnavailable": true,
+      "network": {
+        "allowedDomains": $domains
+      }
+    } |
+    if $strict then .allowUnsandboxedCommands = false else del(.allowUnsandboxedCommands) end' \
+   "$SETTINGS_FILE" > "$TMP_SETTINGS" && mv "$TMP_SETTINGS" "$SETTINGS_FILE"
+
+chown "$U:$U" "$SETTINGS_FILE"
+chmod 0600 "$SETTINGS_FILE"
 rm -f /tmp/.claude-status.json 2>/dev/null || true
+
+# Codex sandbox config (WP-3B: workspace-write sandbox mode)
+install -d -o "$U" -g "$U" "$H/.codex"
+cat > "$H/.codex/config.toml" <<'TOML'
+# Codex configuration for agent-devbox
+sandbox_mode = "workspace-write"
+approval_policy = "on-request"
+
+[sandbox_workspace_write]
+writable_roots = ["/workspace"]
+TOML
+chown "$U:$U" "$H/.codex/config.toml"
+chmod 0600 "$H/.codex/config.toml"
 
 # Configure persistent memory storage (persisting across VM rebuilds if /workspace is mounted)
 if mountpoint -q /workspace 2>/dev/null; then

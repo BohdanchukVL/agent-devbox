@@ -12,15 +12,27 @@ export DEBIAN_FRONTEND=noninteractive
 
 # shellcheck source=/dev/null
 . /etc/devbox/devbox.env
+# shellcheck source=/dev/null
+. /opt/devbox/versions.env 2>/dev/null || . /opt/devbox/provisioning/versions.env 2>/dev/null || true
 U="$DEVBOX_USER"
 H="/home/$U"
 log() { echo "[devbox $(date -u +%H:%M:%S)] $*"; }
 
 [ "${INSTALL_BROWSER:-false}" = "true" ] || { log "browser install skipped"; exit 0; }
 
-log "installing Playwright + headless Chromium"
+pin() {
+  local var_name="$1"
+  local fallback="${2:-latest}"
+  if [ "${DEVBOX_RELEASE_CHANNEL:-stable}" = "stable" ]; then
+    echo "${!var_name:-$fallback}"
+  else
+    echo "latest"
+  fi
+}
+
+log "installing Playwright $(pin PLAYWRIGHT_VERSION 1.51.0) + headless Chromium"
 # playwright CLI into the dev-owned npm prefix (set up by install-agents.sh)
-sudo -u "$U" -H npm install -g playwright || true
+sudo -u "$U" -H npm install -g "playwright@$(pin PLAYWRIGHT_VERSION 1.51.0)" || true
 
 PW="$H/.npm-global/bin/playwright"
 if [ -x "$PW" ]; then

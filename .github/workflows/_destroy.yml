@@ -1,0 +1,163 @@
+name: Reusable Destroy
+
+on:
+  workflow_call:
+    inputs:
+      cloud:
+        description: Cloud provider (hetzner, aws, azure)
+        required: true
+        type: string
+      location:
+        description: Region / datacenter location
+        required: false
+        type: string
+        default: ""
+      confirm:
+        description: Confirmation string (must be "destroy")
+        required: true
+        type: string
+      state_key:
+        description: State key path
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  destroy:
+    runs-on: ubuntu-latest
+    env:
+      HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.HETZNER_S3_ACCESS_KEY || secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.HETZNER_S3_SECRET_KEY || secrets.AWS_SECRET_ACCESS_KEY }}
+      TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+      STATE_LOCATION: ${{ vars.HETZNER_STATE_LOCATION || 'fsn1' }}
+      HAS_AWS_ROLE: ${{ secrets.AWS_ROLE_ARN != '' }}
+      HAS_AZURE_OIDC: ${{ secrets.AZURE_CLIENT_ID != '' }}
+
+    steps:
+      - name: Check confirmation
+        if: inputs.confirm != 'destroy'
+        run: |
+          echo '::error::Confirmation failed — type "destroy" in the confirm field.'
+          exit 1
+
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      # ── AWS Authentication ──────────────────────────────────────────────────
+      - name: Configure AWS credentials (OIDC role)
+        if: inputs.cloud == 'aws' && env.HAS_AWS_ROLE == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ inputs.location }}
+
+      - name: Configure AWS credentials (access keys)
+        if: inputs.cloud == 'aws' && env.HAS_AWS_ROLE != 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ inputs.location }}
+
+      # ── Azure Authentication ────────────────────────────────────────────────
+      - name: Azure login (OIDC)
+        if: inputs.cloud == 'azure' && env.HAS_AZURE_OIDC == 'true'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Azure login (service principal secret)
+        if: inputs.cloud == 'azure' && env.HAS_AZURE_OIDC != 'true'
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # ── Locate state backend ────────────────────────────────────────────────
+      - name: Locate state backend (Hetzner)
+        if: inputs.cloud == 'hetzner'
+        id: state_hetzner
+        run: |
+          OWNER=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+          REPO_HASH=$(echo -n "$GITHUB_REPOSITORY" | sha256sum | cut -c1-8)
+          OLD_BUCKET="tfstate-agent-devbox-$OWNER"
+          NEW_BUCKET="tfstate-agent-devbox-$OWNER-$REPO_HASH"
+          ENDPOINT="https://$STATE_LOCATION.your-objectstorage.com"
+          if aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3api head-bucket --bucket "$OLD_BUCKET" 2>/dev/null; then
+            BUCKET="$OLD_BUCKET"
+          else
+            BUCKET="$NEW_BUCKET"
+          fi
+          echo "bucket=$BUCKET" >> "$GITHUB_OUTPUT"
+          echo "endpoint=$ENDPOINT" >> "$GITHUB_OUTPUT"
+
+      - name: Locate state backend (AWS)
+        if: inputs.cloud == 'aws'
+        id: state_aws
+        run: |
+          OWNER=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
+          REPO_HASH=$(echo -n "$GITHUB_REPOSITORY" | sha256sum | cut -c1-8)
+          BUCKET="tfstate-agent-devbox-$OWNER-$REPO_HASH"
+          echo "bucket=$BUCKET" >> "$GITHUB_OUTPUT"
+
+      - name: Locate state backend (Azure)
+        if: inputs.cloud == 'azure'
+        id: state_azure
+        run: |
+          SUB_ID=$(az account show --query id -o tsv)
+          echo "ARM_SUBSCRIPTION_ID=$SUB_ID" >> "$GITHUB_ENV"
+          RG="agent-devbox-tfstate"
+          SA="devboxtf$(echo -n "$GITHUB_REPOSITORY" | sha256sum | cut -c1-14)"
+          KEY=$(az storage account keys list --account-name "$SA" --resource-group "$RG" --query '[0].value' -o tsv)
+          echo "::add-mask::$KEY"
+          echo "ARM_ACCESS_KEY=$KEY" >> "$GITHUB_ENV"
+          echo "resource_group=$RG" >> "$GITHUB_OUTPUT"
+          echo "storage_account=$SA" >> "$GITHUB_OUTPUT"
+
+      # ── Terraform Init ──────────────────────────────────────────────────────
+      - name: Terraform init
+        working-directory: terraform/${{ inputs.cloud }}
+        run: |
+          KEY="${{ inputs.state_key != '' && inputs.state_key || format('{0}/terraform.tfstate', inputs.cloud) }}"
+          if [ "${{ inputs.cloud }}" = "hetzner" ]; then
+            terraform init \
+              -backend-config="bucket=${{ steps.state_hetzner.outputs.bucket }}" \
+              -backend-config="key=$KEY" \
+              -backend-config="region=$STATE_LOCATION" \
+              -backend-config="endpoints={s3=\"${{ steps.state_hetzner.outputs.endpoint }}\"}" \
+              -backend-config="use_path_style=true" \
+              -backend-config="skip_credentials_validation=true" \
+              -backend-config="skip_region_validation=true" \
+              -backend-config="skip_requesting_account_id=true" \
+              -backend-config="skip_metadata_api_check=true" \
+              -backend-config="skip_s3_checksum=true"
+          elif [ "${{ inputs.cloud }}" = "aws" ]; then
+            terraform init \
+              -backend-config="bucket=${{ steps.state_aws.outputs.bucket }}" \
+              -backend-config="key=$KEY" \
+              -backend-config="region=${{ inputs.location }}" \
+              -backend-config="use_lockfile=true"
+          elif [ "${{ inputs.cloud }}" = "azure" ]; then
+            terraform init \
+              -backend-config="resource_group_name=${{ steps.state_azure.outputs.resource_group }}" \
+              -backend-config="storage_account_name=${{ steps.state_azure.outputs.storage_account }}" \
+              -backend-config="container_name=tfstate" \
+              -backend-config="key=$KEY"
+          fi
+
+      # ── Terraform Destroy ───────────────────────────────────────────────────
+      - name: Terraform destroy
+        working-directory: terraform/${{ inputs.cloud }}
+        run: terraform destroy -auto-approve
+
+      - name: Summary
+        run: echo "## 🗑️ ${{ inputs.cloud }} environment destroyed" >> "$GITHUB_STEP_SUMMARY"
