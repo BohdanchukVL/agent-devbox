@@ -14,9 +14,13 @@ Provides browser and mobile terminal access over Tailscale / HTTPS with native m
   - Paste images directly from the OS clipboard (`Cmd+V` / `Ctrl+V`).
   - Mobile touch buttons for instant 📷 Camera snap & 📎 File attachment.
   - Uploads are saved directly to `<active-pane-cwd>/.devbox-inbox/` (or `~/.devbox/inbox`) and the relative path is typed into your active prompt via `tmux send-keys`.
-- **Multi-Device Grouped Sessions**:
-  - Automatically isolates desktop and mobile clients (`main-web` vs `main-mobile`) while grouping them to the underlying windows and processes (`main`).
-  - Active client determines the window geometry without breaking desktop terminal layouts when switching devices.
+- **Multi-Client & Per-Tab Session Isolation**:
+  - Automatically isolates browser tabs and devices (`web-desktop-<id>`, `web-mobile-<id>`) into distinct linked tmux sessions sharing the underlying window group (`main`).
+  - Each tab gets independent terminal dimensions, scrollback, and cursor positions without viewport collision or fighting.
+  - Ephemeral linked sessions are automatically destroyed when the browser disconnects, preserving underlying background jobs.
+- **Security & Authentication**:
+  - **Token & Cookie Auth Bootstrap**: First-time login via `http://<devbox>:7681/?token=<secret>` sets an `HttpOnly`, `SameSite=Strict` cookie (`devbox_token`) and redirects to clean URL `/`. Token is also accepted via `Authorization: Bearer` or `X-Devbox-Token`.
+  - **Origin Guard & CSRF / CSWSH Protection**: Validates `Origin` against `Host` and `X-Forwarded-Host` (supporting Tailscale serve / ingress proxies). Rejects cross-origin state-changing POST requests (403) and unauthorized WebSocket handshakes (1008).
 - **Mobile Touch Bar**: Quick-access touch controls for essential keys:
   - `Esc`, `Tab`, `Ctrl+C`, `Enter`, `/`
   - `▲` / `▼` history navigation
@@ -41,5 +45,14 @@ journalctl --user -u devbox-web -f
 
 Listening by default on port `7681`. When connected to Tailscale, access directly via your Tailscale IP:
 ```
-http://<tailscale-ip>:7681
+http://<tailscale-ip>:7681/?token=<token>
+```
+
+---
+
+## Testing
+
+Run unit tests:
+```bash
+npm test
 ```

@@ -48,6 +48,17 @@ an install toggle) instead of creating a second one.
 > volume enabled your `/workspace` data survives `server_type` changes within
 > the same location.
 
+> [!WARNING]
+> **Deploy with changed payload recreates the server.** `/home` and agent
+> logins are lost on recreation — only `/workspace` on a volume survives.
+> Cancelling a deploy run between destroy and create leaves you without a
+> server; re-run the workflow to recover.
+
+Automatic **backups** are enabled by default (`backups = true`). They add ≈20%
+to the server cost and keep the last 7 daily snapshots. Disable with
+`backups = false` in Terraform or the workflow input if the devbox is
+truly ephemeral.
+
 ## 4. Connect
 
 The workflow summary prints the IP:

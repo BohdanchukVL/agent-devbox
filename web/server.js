@@ -13,7 +13,7 @@ const __dirname = path.dirname(__filename);
 
 const PORT = parseInt(process.env.PORT || '7681', 10);
 const HOST = process.env.HOST || '127.0.0.1';
-const AUTH_TOKEN = process.env.DEVBOX_WEB_TOKEN || process.env.AUTH_TOKEN || '';
+const AUTH_TOKEN = process.env.DEVBOX_WEB_TOKEN || process.env.AUTH_TOKEN || (process.env.DEVBOX_WEB_TEST ? 'test-secret-token' : '');
 const ALLOWED_ORIGIN = process.env.DEVBOX_ALLOWED_ORIGIN || '';
 
 if (!AUTH_TOKEN) {
@@ -44,12 +44,12 @@ function getMimeType(filePath) {
 }
 
 function sanitizeSessionName(name) {
-  if (typeof name !== 'string') return 'main-web';
+  if (typeof name !== 'string') return 'main';
   const clean = name.trim();
   if (/^[a-zA-Z0-9_-]{1,64}$/.test(clean)) {
     return clean;
   }
-  return 'main-web';
+  return 'main';
 }
 
 function ensureTmuxSession(sessionName) {
@@ -109,6 +109,23 @@ function safeTokenCompare(input) {
   return crypto.timingSafeEqual(bufA, bufB);
 }
 
+function parseCookies(cookieHeader) {
+  const list = {};
+  if (!cookieHeader) return list;
+  cookieHeader.split(';').forEach(cookie => {
+    const parts = cookie.split('=');
+    const name = parts[0]?.trim();
+    if (!name) return;
+    const value = parts.slice(1).join('=').trim();
+    try {
+      list[name] = decodeURIComponent(value);
+    } catch {
+      list[name] = value;
+    }
+  });
+  return list;
+}
+
 function checkAuth(req, url) {
   const authHeader = req.headers['authorization'] || '';
   if (authHeader.startsWith('Bearer ')) {
@@ -118,6 +135,11 @@ function checkAuth(req, url) {
   }
   const customHeader = req.headers['x-devbox-token'] || '';
   if (safeTokenCompare(customHeader)) return true;
+
+  const cookies = parseCookies(req.headers['cookie']);
+  if (cookies['devbox_token'] && safeTokenCompare(cookies['devbox_token'])) {
+    return true;
+  }
 
   const tokenQuery = url.searchParams.get('token');
   if (tokenQuery && safeTokenCompare(tokenQuery)) return true;
@@ -131,6 +153,22 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${hostHeader}`);
   const pathname = url.pathname;
   const origin = req.headers.origin;
+
+  // Clean URL auth bootstrap: if visiting root with ?token=..., set HttpOnly SameSite cookie and redirect
+  if ((pathname === '/' || pathname === '/index.html') && url.searchParams.has('token')) {
+    const tokenParam = url.searchParams.get('token');
+    if (safeTokenCompare(tokenParam)) {
+      url.searchParams.delete('token');
+      const cleanSearch = url.searchParams.toString();
+      const redirectTarget = pathname + (cleanSearch ? `?${cleanSearch}` : '');
+      res.writeHead(302, {
+        'Set-Cookie': `devbox_token=${encodeURIComponent(AUTH_TOKEN)}; Path=/; HttpOnly; SameSite=Strict`,
+        'Location': redirectTarget
+      });
+      res.end();
+      return;
+    }
+  }
 
   // Origin check & CORS: restrict to same-origin / allowed hosts
   if (origin && isAllowedOrigin(origin, hostHeader, forwardedHost)) {
@@ -146,6 +184,13 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Reject state-changing requests from foreign origins (CSRF protection)
+  if (req.method === 'POST' && origin && !isAllowedOrigin(origin, hostHeader, forwardedHost)) {
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Forbidden: cross-origin POST not allowed' }));
+    return;
+  }
+
   // Token authentication check for API routes
   if (pathname.startsWith('/api/') && !checkAuth(req, url)) {
     res.writeHead(401, { 'Content-Type': 'application/json' });
@@ -155,7 +200,7 @@ const server = http.createServer((req, res) => {
 
   // 1. Upload API
   if (req.method === 'POST' && pathname === '/api/upload') {
-    const session = url.searchParams.get('session') || 'main-web';
+    const session = sanitizeSessionName(url.searchParams.get('session') || 'main');
     ensureTmuxSession(session);
     const cwd = getPaneCwd(session);
 
@@ -241,7 +286,7 @@ const server = http.createServer((req, res) => {
     req.on('end', () => {
       try {
         const data = JSON.parse(body || '{}');
-        const session = sanitizeSessionName(data.session || 'main-web');
+        const session = sanitizeSessionName(data.session || 'main');
         ensureTmuxSession(session);
 
         if (data.action === 'zoom') {
@@ -263,7 +308,7 @@ const server = http.createServer((req, res) => {
 
   // 3. Status API
   if (req.method === 'GET' && pathname === '/api/status') {
-    const session = sanitizeSessionName(url.searchParams.get('session') || 'main-web');
+    const session = sanitizeSessionName(url.searchParams.get('session') || 'main');
     let cwd = '';
     try {
       cwd = getPaneCwd(session);
@@ -312,6 +357,7 @@ const pingInterval = setInterval(() => {
     ws.ping();
   });
 }, 30000);
+pingInterval.unref();
 
 wss.on('close', () => {
   clearInterval(pingInterval);
@@ -355,6 +401,7 @@ wss.on('connection', (ws, req) => {
   if (customSession && customSession !== 'main' && customSession !== 'main-web' && customSession !== 'main-mobile') {
     sessionName = sanitizeSessionName(customSession);
     ensureTmuxSession(sessionName);
+    isEphemeral = sessionName.startsWith('web-');
   } else {
     const clientId = crypto.randomBytes(4).toString('hex');
     sessionName = sanitizeSessionName(`web-${clientType}-${clientId}`);
@@ -363,6 +410,9 @@ wss.on('connection', (ws, req) => {
   }
 
   console.log(`[ws] client connected (${clientType}) -> session "${sessionName}" [${cols}x${rows}]`);
+
+  // Inform frontend of canonical session name so actions/uploads map to this client's linked session
+  ws.send(JSON.stringify({ type: 'session', session: sessionName }));
 
   const term = pty.spawn('tmux', ['attach-session', '-t', sessionName], {
     name: 'xterm-256color',
@@ -415,6 +465,10 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-server.listen(PORT, HOST, () => {
-  console.log(`[devbox-web] server listening at http://${HOST}:${PORT}`);
-});
+export { server, wss, parseCookies, checkAuth, isAllowedOrigin, safeTokenCompare };
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+  server.listen(PORT, HOST, () => {
+    console.log(`[devbox-web] server listening at http://${HOST}:${PORT}`);
+  });
+}

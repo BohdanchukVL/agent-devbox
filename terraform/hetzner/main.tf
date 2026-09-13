@@ -86,6 +86,7 @@ resource "hcloud_server" "this" {
   ssh_keys     = [hcloud_ssh_key.this.id]
   firewall_ids = [hcloud_firewall.this.id]
   user_data    = local.user_data
+  backups      = var.backups
 
   lifecycle {
     ignore_changes       = [user_data]

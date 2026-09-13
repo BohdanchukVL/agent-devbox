@@ -82,11 +82,26 @@ chmod +x "$H/.devbox/mcp/db/index.js" 2>/dev/null || true
 chown -R "$U:$U" "$H/.devbox/mcp/db"
 sudo -u "$U" -H bash -c "cd '$H/.devbox/mcp/db' && npm install --omit=dev" || true
 
+# Install per-project memory wrapper (routes memory to <git-root>/.devbox/memory.jsonl)
+if [ -f /opt/devbox/devbox-memory.sh ] || [ -f /opt/devbox/provisioning/devbox-memory.sh ]; then
+  MEMORY_SRC=$([ -f /opt/devbox/devbox-memory.sh ] && echo /opt/devbox/devbox-memory.sh || echo /opt/devbox/provisioning/devbox-memory.sh)
+  install -D -m 0755 -o "$U" -g "$U" "$MEMORY_SRC" "$H/.devbox/bin/devbox-memory"
+fi
+
+# Add .devbox/ to global git excludes so per-project memory files are never committed
+sudo -u "$U" -H bash -c '
+  EXCLUDES="$HOME/.config/git/ignore"
+  mkdir -p "$(dirname "$EXCLUDES")"
+  touch "$EXCLUDES"
+  grep -qxF ".devbox/" "$EXCLUDES" 2>/dev/null || echo ".devbox/" >> "$EXCLUDES"
+  git config --global core.excludesfile "$EXCLUDES"
+' || true
+
 # Pre-configure MCP servers for Claude Code
 if command -v claude >/dev/null 2>&1 || [ -x "$PREFIX/bin/claude" ]; then
   sudo -u "$U" -H bash -c "export PATH=\"$PREFIX/bin:\$PATH\"; claude mcp add -s user ast-grep -- ast-grep-mcp 2>/dev/null || true"
   sudo -u "$U" -H bash -c "export PATH=\"$PREFIX/bin:\$PATH\"; claude mcp add -s user code-intel -- '$H/.devbox/mcp/code-intel/index.js' 2>/dev/null || true"
-  sudo -u "$U" -H bash -c "export PATH=\"$PREFIX/bin:\$PATH\"; claude mcp add -s user memory -e MEMORY_FILE_PATH='$H/.devbox/memory.jsonl' -- mcp-server-memory 2>/dev/null || true"
+  sudo -u "$U" -H bash -c "export PATH=\"$PREFIX/bin:\$PATH\"; claude mcp add -s user memory -- '$H/.devbox/bin/devbox-memory' 2>/dev/null || true"
   sudo -u "$U" -H bash -c "export PATH=\"$PREFIX/bin:\$PATH\"; claude mcp add -s user playwright -- playwright-mcp --headless 2>/dev/null || true"
   sudo -u "$U" -H bash -c "export PATH=\"$PREFIX/bin:\$PATH\"; claude mcp add -s user db -- '$H/.devbox/mcp/db/index.js' 2>/dev/null || true"
 fi
@@ -152,11 +167,8 @@ cat > "$H/.gemini/config/mcp_config.json" <<EOF
       "args": []
     },
     "memory": {
-      "command": "mcp-server-memory",
-      "args": [],
-      "env": {
-        "MEMORY_FILE_PATH": "$MEMORY_PATH"
-      }
+      "command": "$H/.devbox/bin/devbox-memory",
+      "args": []
     },
     "playwright": {
       "command": "playwright-mcp",
