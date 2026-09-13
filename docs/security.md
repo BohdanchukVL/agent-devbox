@@ -40,7 +40,7 @@ accordingly.
     - `sandbox.enabled = true`
     - `sandbox.failIfUnavailable = true`
     - `sandbox.allowUnsandboxedCommands = false` (when `agent_sandbox_strict = true`)
-    - `sandbox.credentials = false`: credentials opt-in isolation. When enabled, credentials from host tool configurations (`~/.aws`, `~/.ssh`, `~/.config/gh`, cloud tokens) are shielded from agent tool execution.
+    - `sandbox.credentials`: credential isolation configuration object (specifying `files` and `envVars`). When configured, sensitive host paths (`~/.aws/**`, `~/.ssh/**`, `~/.config/gh/**`) and environment secrets (`AWS_*`, `GITHUB_TOKEN`, `GH_TOKEN`) are shielded from agent tool execution.
     - `sandbox.network.allowedDomains`: restricted to package registries and GitHub (`registry.npmjs.org`, `github.com`, `api.github.com`, `objects.githubusercontent.com`, `crates.io`, `static.crates.io`, `pypi.org`, `files.pythonhosted.org`, `proxy.golang.org`).
     - Agents cannot execute `sudo` inside the sandbox. The human user can execute host commands outside the sandbox via the interactive `!` shell mode or direct terminal.
   - **Codex**: runs in `sandbox_mode = "workspace-write"` with Bubblewrap (`bwrap`).
@@ -78,7 +78,7 @@ The companion CLI `russh` dependency is updated to `0.62.7`, resolving pre-relea
 - **Single-use, Ephemeral Keys**:
   Always generate **single-use (non-reusable)**, **ephemeral** keys tagged with an ACL tag (such as `tag:devbox`). Ephemeral nodes are automatically culled from your Tailnet when the devbox VM is terminated.
 - **Tailscale OAuth Client Credentials**:
-  For CI/CD and automated ephemeral deployments, use Tailscale OAuth client credentials (`TAILSCALE_OAUTH_CLIENT_ID` and `TAILSCALE_OAUTH_CLIENT_SECRET`) with the `devices:write` scope and `tag:devbox` attribute. This enables automated pipelines to mint dynamic, 15-minute ephemeral keys on demand, eliminating static pre-generated tokens entirely.
+  For CI/CD and automated ephemeral deployments, use Tailscale OAuth client credentials (`TAILSCALE_OAUTH_CLIENT_ID` and `TAILSCALE_OAUTH_CLIENT_SECRET`) with the `auth_keys` scope and `tag:devbox` attribute. This enables automated pipelines to mint dynamic, 15-minute ephemeral keys on demand, eliminating static pre-generated tokens entirely.
 - **Recommended Destination-Only ACL**:
   Devbox instances are development workstations that may run unverified code or package dependencies. Configure your Tailscale ACL policy so `tag:devbox` is strictly a destination for authorized engineers, with no access to other internal network assets:
 

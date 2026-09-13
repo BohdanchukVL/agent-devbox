@@ -80,6 +80,16 @@ on:
         required: false
         type: string
         default: "stable"
+      use_runner_ssh_key:
+        description: Use ephemeral runner SSH key as primary ssh_public_key (avoids key collisions in E2E runs)
+        required: false
+        type: boolean
+        default: false
+      tailscale_enabled:
+        description: Enable Tailscale join and configuration
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   id-token: write
@@ -102,23 +112,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Generate ephemeral SSH key for runner
+        id: runner_key
+        run: |
+          ssh-keygen -t ed25519 -f /tmp/runner_key -N "" -q
+          echo "private_key_path=/tmp/runner_key" >> "$GITHUB_OUTPUT"
+          echo "public_key=$(cat /tmp/runner_key.pub)" >> "$GITHUB_OUTPUT"
+          if [ "${{ inputs.use_runner_ssh_key }}" = "true" ]; then
+            echo "TF_VAR_ssh_public_key=$(cat /tmp/runner_key.pub)" >> "$GITHUB_ENV"
+          fi
+
       - name: Validate SSH public key
         run: |
-          if ! ssh-keygen -l -f /dev/stdin <<< "$TF_VAR_ssh_public_key" >/dev/null 2>&1; then
-            echo '::error::SSH_PUBLIC_KEY is not a valid OpenSSH public key.'
+          KEY_TO_CHECK="${TF_VAR_ssh_public_key}"
+          if [ "${{ inputs.use_runner_ssh_key }}" = "true" ]; then
+            KEY_TO_CHECK="$(cat /tmp/runner_key.pub)"
+          fi
+          if ! ssh-keygen -l -f /dev/stdin <<< "$KEY_TO_CHECK" >/dev/null 2>&1; then
+            echo '::error::SSH public key is not a valid OpenSSH public key.'
             exit 1
           fi
 
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_wrapper: false
-
-      - name: Generate ephemeral SSH key for readiness gate
-        id: runner_key
-        run: |
-          ssh-keygen -t ed25519 -f /tmp/runner_key -N "" -q
-          echo "private_key_path=/tmp/runner_key" >> "$GITHUB_OUTPUT"
-          echo "public_key=$(cat /tmp/runner_key.pub)" >> "$GITHUB_OUTPUT"
 
       - name: Detect runner public IP
         id: runner_ip
@@ -246,6 +263,12 @@ jobs:
       - name: Resolve Tailscale auth key
         id: tailscale_auth
         run: |
+          if [ "${{ inputs.tailscale_enabled }}" != "true" ]; then
+            echo "Tailscale is disabled for this deployment"
+            echo "key=" >> "$GITHUB_OUTPUT"
+            echo "TF_VAR_tailscale_authkey=" >> "$GITHUB_ENV"
+            exit 0
+          fi
           if [ -n "${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}" ] && [ -n "${{ secrets.TAILSCALE_OAUTH_CLIENT_SECRET }}" ]; then
             echo "Requesting ephemeral auth key via Tailscale OAuth API..."
             TOKEN_RESP=$(curl -fsSL -d "client_id=${{ secrets.TAILSCALE_OAUTH_CLIENT_ID }}" \
@@ -372,7 +395,7 @@ jobs:
       - name: Terraform apply (with runner key for readiness gate)
         working-directory: terraform/${{ inputs.cloud }}
         env:
-          TF_VAR_runner_ssh_public_key: ${{ steps.runner_key.outputs.public_key }}
+          TF_VAR_runner_ssh_public_key: ${{ inputs.use_runner_ssh_key && '' || steps.runner_key.outputs.public_key }}
         run: |
           COMMON_ARGS=(
             -auto-approve
@@ -473,7 +496,7 @@ jobs:
 
       # ── Cleanup runner access ───────────────────────────────────────────────
       - name: Cleanup runner access
-        if: always()
+        if: always() && inputs.use_runner_ssh_key != true
         working-directory: terraform/${{ inputs.cloud }}
         env:
           SSH_ALLOWED_CIDRS: ${{ inputs.ssh_allowed_cidrs }}

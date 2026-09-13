@@ -295,15 +295,35 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   fi
 fi
 
+# Tailscale connectivity & status check (WP-3A/WP-3D)
+# When Tailscale auth key was supplied, verify that daemon is actually joined and Running
+if [ -f /etc/devbox/.tailscale_requested ] || [ -f /etc/devbox/.failed_tailscale ] || [ -n "${TAILSCALE_AUTHKEY:-}" ]; then
+  if [ -f /etc/devbox/.failed_tailscale ]; then
+    fail "Tailscale connection failed (/etc/devbox/.failed_tailscale is present)"
+  elif command -v tailscale >/dev/null 2>&1; then
+    TS_STATE=$(tailscale status --json 2>/dev/null | jq -r '.BackendState // empty' || true)
+    if [ "$TS_STATE" = "Running" ]; then
+      ok "Tailscale connected and operational (BackendState: Running)"
+    else
+      fail "Tailscale key was provided but backend is not Running (BackendState: ${TS_STATE:-Unknown})"
+    fi
+  else
+    fail "Tailscale was requested but tailscale binary is missing"
+  fi
+fi
+
 # Tailscale SSH check (RunSSH must be false to preserve native OpenSSH hardening)
 if command -v tailscale >/dev/null 2>&1; then
-  TS_PREFS=$(tailscale debug prefs 2>/dev/null || true)
-  if echo "$TS_PREFS" | grep -qiE 'RunSSH:.*true|"RunSSH":\s*true'; then
-    fail "Tailscale SSH is enabled (RunSSH: true) — native OpenSSH required"
-  elif echo "$TS_PREFS" | grep -qiE 'RunSSH:.*false|"RunSSH":\s*false'; then
-    ok "Tailscale SSH is disabled (RunSSH: false)"
-  else
-    warn "Tailscale installed but debug prefs not available (not logged in)"
+  TS_STATE=$(tailscale status --json 2>/dev/null | jq -r '.BackendState // empty' || true)
+  if [ "$TS_STATE" = "Running" ]; then
+    TS_PREFS=$(tailscale debug prefs 2>/dev/null || true)
+    if echo "$TS_PREFS" | grep -qiE 'RunSSH:.*true|"RunSSH":\s*true'; then
+      fail "Tailscale SSH is enabled (RunSSH: true) — native OpenSSH required"
+    elif echo "$TS_PREFS" | grep -qiE 'RunSSH:.*false|"RunSSH":\s*false'; then
+      ok "Tailscale SSH is disabled (RunSSH: false)"
+    else
+      warn "Tailscale debug prefs could not be verified"
+    fi
   fi
 fi
 

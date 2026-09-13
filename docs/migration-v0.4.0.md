@@ -103,6 +103,9 @@ terraform plan
 ```
 **Required outcome**: Plan must report `0 to destroy`.
 
+> [!NOTE]
+> **SSH Key Compatibility**: `hcloud_ssh_key.this` remains defined as a standard resource without counts or dynamic lookups. Your existing `hcloud_ssh_key.this` in state is preserved untouched, preventing any ID changes or `ForceNew` server recreations.
+
 #### Step 5: In-Place Host Hardening (Catching up on v0.4.0 security)
 Because `user_data` has `ignore_changes = [user_data]`, an existing server does not automatically run updated cloud-init scripts. Apply the v0.4.0 hardening manually on the host:
 

@@ -24,31 +24,13 @@ module "core" {
   release_channel       = var.release_channel
 }
 
-data "hcloud_ssh_keys" "all" {}
-
 locals {
   use_volume = var.disk_size > 0
   ssh_cidrs  = module.core.ssh_cidrs
   user_data  = module.core.user_data
-
-  # Compare base64 key payloads to find if key is already registered in Hetzner project
-  user_key_parts = split(" ", trimspace(var.ssh_public_key))
-  user_key_token = length(local.user_key_parts) >= 2 ? local.user_key_parts[1] : trimspace(var.ssh_public_key)
-
-  matching_keys = [
-    for k in data.hcloud_ssh_keys.all.ssh_keys : k.id
-    if(
-      trimspace(k.public_key) == trimspace(var.ssh_public_key) ||
-      (length(split(" ", trimspace(k.public_key))) >= 2 && split(" ", trimspace(k.public_key))[1] == local.user_key_token)
-    )
-  ]
-
-  key_already_exists = length(local.matching_keys) > 0
-  ssh_key_id         = local.key_already_exists ? local.matching_keys[0] : (length(hcloud_ssh_key.this) > 0 ? hcloud_ssh_key.this[0].id : null)
 }
 
 resource "hcloud_ssh_key" "this" {
-  count      = local.key_already_exists ? 0 : 1
   name       = "${var.name}-key"
   public_key = var.ssh_public_key
 }
@@ -101,7 +83,7 @@ resource "hcloud_server" "this" {
   server_type  = var.server_type
   location     = var.location
   image        = "ubuntu-24.04"
-  ssh_keys     = [local.ssh_key_id]
+  ssh_keys     = [hcloud_ssh_key.this.id]
   firewall_ids = [hcloud_firewall.this.id]
   labels       = module.core.labels
   user_data    = local.user_data

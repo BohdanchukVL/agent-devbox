@@ -18,6 +18,7 @@ trap 'err_report $? "$BASH_COMMAND" "$LINENO"' ERR
 if [ -f /etc/devbox/devbox.env ]; then
   # shellcheck source=/dev/null
   . /etc/devbox/devbox.env
+  [ -n "${TAILSCALE_AUTHKEY:-}" ] && touch /etc/devbox/.tailscale_requested
 fi
 
 DEVBOX_USER="${DEVBOX_USER:-dev}"
@@ -56,6 +57,7 @@ if [ -n "$PROVISIONING_SECRETS_URL" ]; then
     . /etc/devbox/secrets.env
     set +a
     export TAILSCALE_AUTHKEY DEVBOX_WEB_TOKEN
+    [ -n "${TAILSCALE_AUTHKEY:-}" ] && touch /etc/devbox/.tailscale_requested
     sed -i '/^PROVISIONING_SECRETS_URL=/d' /etc/devbox/devbox.env 2>/dev/null || true
     unset PROVISIONING_SECRETS_URL
   else

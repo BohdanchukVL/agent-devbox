@@ -102,6 +102,7 @@ if curl -fsSL https://tailscale.com/install.sh | sh; then
     apt-get install -y --allow-downgrades "tailscale=$TS_VER" 2>/dev/null || true
   fi
   if [ -n "${TAILSCALE_AUTHKEY:-}" ]; then
+    touch /etc/devbox/.tailscale_requested
     log "joining Tailscale network"
     if ! tailscale up --authkey="${TAILSCALE_AUTHKEY}" --hostname="agent-devbox"; then
       log "WARNING: Tailscale join failed (check auth key)"
@@ -113,7 +114,9 @@ if curl -fsSL https://tailscale.com/install.sh | sh; then
   fi
 else
   log "WARNING: tailscale install script failed (continuing)"
-  touch /etc/devbox/.failed_tailscale
+  if [ -n "${TAILSCALE_AUTHKEY:-}" ]; then
+    touch /etc/devbox/.failed_tailscale
+  fi
 fi
 # Scrub sensitive auth key from disk immediately after joining
 sed -i '/^TAILSCALE_AUTHKEY=/d' /etc/devbox/devbox.env 2>/dev/null || true

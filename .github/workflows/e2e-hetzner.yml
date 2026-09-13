@@ -9,6 +9,11 @@ on:
         type: choice
         default: stable
         options: [stable, latest]
+      configure_tailscale:
+        description: Enable Tailscale join testing (requires OAuth client or reusable auth key)
+        required: false
+        type: boolean
+        default: false
   schedule:
     # Weekly on Sunday at 04:00 UTC (tests stable pinned channel)
     - cron: '0 4 * * 0'
@@ -31,6 +36,8 @@ jobs:
       disk_size: "0"
       name_prefix: agent-devbox-e2e-${{ github.run_id }}
       state_key: e2e/${{ github.run_id }}/terraform.tfstate
+      use_runner_ssh_key: true
+      tailscale_enabled: ${{ inputs.configure_tailscale || false }}
       release_channel: ${{ github.event_name == 'schedule' && (github.event.schedule == '0 6 1 * *' && 'latest' || 'stable') || inputs.release_channel || 'stable' }}
     secrets: inherit
 
