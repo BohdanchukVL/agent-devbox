@@ -99,7 +99,9 @@ if [ ! -f /opt/devbox/install-base.sh ] && [ ! -f /opt/devbox/provisioning/insta
   fi
 
   log "Extracting payload to /opt/devbox..."
+  set +o pipefail
   FIRST_ENTRY=$(tar -tzf "$PAYLOAD_TAR" 2>/dev/null | head -n1 | cut -f1 -d"/")
+  set -o pipefail
   if [ "$FIRST_ENTRY" = "provisioning" ] || [ "$FIRST_ENTRY" = "web" ] || [ "$FIRST_ENTRY" = "mcp" ]; then
     tar -xzf "$PAYLOAD_TAR" -C /opt/devbox
   else
