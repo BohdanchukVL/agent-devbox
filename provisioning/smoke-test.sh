@@ -144,6 +144,16 @@ if [ "${INSTALL_CLAUDE:-true}" = "true" ]; then
   fi
 fi
 
+# 4c. ccusage session tracker verification (when Claude or Codex enabled)
+if [ "${INSTALL_CLAUDE:-true}" = "true" ] || [ "${INSTALL_CODEX:-true}" = "true" ]; then
+  if sudo -u "$DEVBOX_USER" -H bash -c 'export PATH="$HOME/.npm-global/bin:$PATH"; command -v ccusage >/dev/null 2>&1'; then
+    CCUSAGE_VER=$(sudo -u "$DEVBOX_USER" -H bash -c 'export PATH="$HOME/.npm-global/bin:$PATH"; ccusage --version 2>&1 | head -n1' || true)
+    ok "ccusage session tracker is installed ($CCUSAGE_VER)"
+  else
+    warn "ccusage session tracker not found on PATH for user $DEVBOX_USER"
+  fi
+fi
+
 # 5. Docker daemon verification
 if [ "${INSTALL_DOCKER:-true}" = "true" ]; then
   if command -v docker >/dev/null 2>&1; then

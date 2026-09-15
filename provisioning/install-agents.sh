@@ -55,6 +55,11 @@ if [ "$INSTALL_CLAUDE" = "true" ]; then
   agent "@anthropic-ai/claude-code@$(pin CLAUDE_CODE_VERSION latest)"
 fi
 
+if [ "$INSTALL_CLAUDE" = "true" ] || [ "$INSTALL_CODEX" = "true" ]; then
+  log "installing ccusage session limit tracker"
+  agent "ccusage@$(pin CCUSAGE_VERSION 20.0.20)"
+fi
+
 if [ "$INSTALL_OPENCODE" = "true" ]; then
   log "installing OpenCode"
   agent "opencode-ai@$(pin OPENCODE_VERSION latest)"
