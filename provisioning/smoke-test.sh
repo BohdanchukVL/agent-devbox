@@ -171,6 +171,19 @@ if [ -d "$HOME_DIR/.devbox/web" ]; then
       warn "devbox-web gateway not responding on 7681 (status: $HTTP_STATUS)"
     fi
   fi
+
+  # Auth mode: tailnet identity (no token) once the machine joined the tailnet
+  WEB_AUTH=$(sed -n 's/^DEVBOX_WEB_AUTH=//p' "$HOME_DIR/.devbox/web.env" 2>/dev/null | tail -n1)
+  [ -n "$WEB_AUTH" ] || WEB_AUTH=token
+  ok "devbox-web auth mode: $WEB_AUTH"
+  if [ "$WEB_AUTH" = "tailscale" ]; then
+    TS_IP4=$(tailscale ip -4 2>/dev/null || true)
+    if [ -n "$TS_IP4" ] && ss -ltn 2>/dev/null | grep -q "${TS_IP4}:7681"; then
+      ok "devbox-web bound to the tailnet address ($TS_IP4:7681)"
+    else
+      fail "devbox-web is in tailscale auth mode but not listening on the tailnet address"
+    fi
+  fi
 fi
 
 # 7. Headless browser verification

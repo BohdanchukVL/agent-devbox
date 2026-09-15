@@ -14,7 +14,7 @@ A fresh Ubuntu 24.04 server with:
 
 - **Agents**: Codex CLI, Claude Code, Google Antigravity CLI (`agy`) pre-installed and ready to auth (OpenCode optional)
 - **Pre-configured MCP Servers**: code-intel (ctags, ast-grep, ripgrep), hardened SQLite/PostgreSQL (`mcp/db`), Playwright browser (`playwright-mcp`), and memory (`mcp-server-memory`)
-- **Web Gateway (`devbox-web`)**: browser and mobile terminal over WebSockets with screenshot/file drag-and-drop, mobile touch controls, token authentication, and HTTPS access via `tailscale serve` or SSH port forward (port 7681)
+- **Web Gateway (`devbox-web`)**: browser and mobile terminal over WebSockets with screenshot/file drag-and-drop and mobile touch controls; authenticates by tailnet identity (no token) or by a shared token over SSH port forward; `devbox web <host>` prints the URL and a QR code for your phone
 - **Codex Sandbox**: bubblewrap (`bwrap`) pre-configured with unprivileged user namespaces for secure local execution
 - **Headless browser**: Chromium via Playwright, so agents can run E2E tests and take screenshots (optional, on by default)
 - **Dev shell**: zsh with autosuggestions, syntax highlighting, a starship prompt, fzf and zoxide, plus modern CLIs (eza, bat, fd, ripgrep, jq, yq, delta, lazygit, direnv, shellcheck, httpie) and neovim

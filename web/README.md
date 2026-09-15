@@ -18,9 +18,10 @@ Provides browser and mobile terminal access over Tailscale / HTTPS with native m
   - Automatically isolates browser tabs and devices (`web-desktop-<id>`, `web-mobile-<id>`) into distinct linked tmux sessions sharing the underlying window group (`main`).
   - Each tab gets independent terminal dimensions, scrollback, and cursor positions without viewport collision or fighting.
   - Ephemeral linked sessions are automatically destroyed when the browser disconnects, preserving underlying background jobs.
-- **Security & Authentication**:
-  - **Token & Cookie Auth Bootstrap**: First-time login via `http://<devbox>:7681/?token=<secret>` sets an `HttpOnly`, `SameSite=Strict` cookie (`devbox_token`) and redirects to clean URL `/`. Token is also accepted via `Authorization: Bearer` or `X-Devbox-Token`.
-  - **Origin Guard & CSRF / CSWSH Protection**: Validates `Origin` against `Host` and `X-Forwarded-Host` (supporting Tailscale serve / ingress proxies). Rejects cross-origin state-changing POST requests (403) and unauthorized WebSocket handshakes (1008).
+- **Security & Authentication** (`DEVBOX_WEB_AUTH`):
+  - **`tailscale` (default when the machine joined the tailnet)**: no token. The peer is identified by the tailnet: `tailscale whois` on the source address, or the `Tailscale-User-Login` header injected by `tailscale serve`. Tagged (machine) nodes are refused; `DEVBOX_WEB_USERS=a@x.com,b@x.com` narrows access to specific logins. Requests whose `Host` is not one of this node's names or addresses are refused with 421 (DNS-rebinding guard; extend with `DEVBOX_ALLOWED_HOSTS`).
+  - **`token`**: shared secret. First-time login via `http://<devbox>:7681/?token=<secret>` sets an `HttpOnly`, `SameSite=Strict` cookie (`devbox_token`) and redirects to `/`. Also accepted via `Authorization: Bearer` or `X-Devbox-Token`.
+  - **Origin Guard & CSRF / CSWSH Protection**: Validates `Origin` against `Host` and `X-Forwarded-Host` (supporting Tailscale serve / ingress proxies). Rejects cross-origin state-changing POST requests (403) and unauthorized WebSocket handshakes (401/403 at the handshake).
 - **Mobile Touch Bar**: Quick-access touch controls for essential keys:
   - `Esc`, `Tab`, `Ctrl+C`, `Enter`, `/`
   - `▲` / `▼` history navigation
@@ -43,10 +44,14 @@ systemctl --user restart devbox-web
 journalctl --user -u devbox-web -f
 ```
 
-Listening by default on port `7681`. When connected to Tailscale, access directly via your Tailscale IP:
+Listening on port `7681`. In `tailscale` mode the gateway binds the tailnet addresses plus loopback (`HOST=auto`); in `token` mode loopback only. Get the URL, or a QR code for your phone:
+
+```bash
+devbox web dev@<host>          # from your laptop (CLI)
+~/.devbox/bin/devbox-web-url   # on the machine; --with-token appends the token in token mode
 ```
-http://<tailscale-ip>:7681/?token=<token>
-```
+
+Without Tailscale, reach it over SSH: `ssh -L 7681:127.0.0.1:7681 dev@<host>` and open `http://127.0.0.1:7681/?token=<token>` (token in `~/.devbox/web.env`).
 
 ---
 
