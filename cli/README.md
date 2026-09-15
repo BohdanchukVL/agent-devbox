@@ -18,7 +18,12 @@ Not a terminal emulator — a transparent proxy between the local TTY and the re
 ```bash
 devbox connect prod                              # alias from ~/.ssh/config or devbox config
 devbox connect dev@203.0.113.7 -p 2222 -i ~/.ssh/key
+devbox web prod                                  # web gateway URL + QR code for a phone
 ```
+
+`devbox web <target>` asks the devbox for its web gateway URL (`devbox-web-url`
+on the machine) and prints it with a QR code. `--no-qr` prints only the URL,
+`--with-token` includes the shared token when the gateway uses token auth.
 
 In-session (leader `Ctrl+G`, configurable):
 
