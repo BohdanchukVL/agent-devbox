@@ -55,6 +55,11 @@ if [ "$INSTALL_CLAUDE" = "true" ]; then
   agent "@anthropic-ai/claude-code@$(pin CLAUDE_CODE_VERSION latest)"
 fi
 
+if [ "$INSTALL_CLAUDE" = "true" ] || [ "$INSTALL_CODEX" = "true" ]; then
+  log "installing ccusage session limit tracker"
+  agent "ccusage@$(pin CCUSAGE_VERSION 20.0.20)"
+fi
+
 if [ "$INSTALL_OPENCODE" = "true" ]; then
   log "installing OpenCode"
   agent "opencode-ai@$(pin OPENCODE_VERSION latest)"
@@ -230,17 +235,45 @@ if [ -d "/opt/devbox/web" ]; then
   cp -r /opt/devbox/web/* "$WEB_DIR/"
   chown -R "$U:$U" "$WEB_DIR"
 
-  # Generate or configure web gateway token (guaranteed non-empty, fail-closed)
-  TOKEN="${DEVBOX_WEB_TOKEN:-}"
-  if [ -z "$TOKEN" ]; then
-    TOKEN=$(openssl rand -hex 16 2>/dev/null || od -vN 16 -An -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
+  # Auth mode: tailnet identity when this machine joined the tailnet (no token),
+  # shared token otherwise. Override with DEVBOX_WEB_AUTH=token|tailscale.
+  WEB_AUTH="${DEVBOX_WEB_AUTH:-}"
+  if [ -z "$WEB_AUTH" ]; then
+    if command -v tailscale >/dev/null 2>&1 && [ "$(tailscale status --json 2>/dev/null | jq -r '.BackendState // empty')" = "Running" ]; then
+      WEB_AUTH=tailscale
+    else
+      WEB_AUTH=token
+    fi
   fi
-  if [ -z "$TOKEN" ]; then
-    log "warning: failed to generate secure DEVBOX_WEB_TOKEN; skipping devbox-web setup"
+
+  WEB_READY=1
+  if [ "$WEB_AUTH" = "tailscale" ]; then
+    printf 'DEVBOX_WEB_AUTH=tailscale\nHOST=auto\n' > "$H/.devbox/web.env"
+    log "devbox-web: tailnet identity auth, no token"
   else
-    echo "DEVBOX_WEB_TOKEN=$TOKEN" > "$H/.devbox/web.env"
+    # Shared token (guaranteed non-empty, fail-closed)
+    TOKEN="${DEVBOX_WEB_TOKEN:-}"
+    if [ -z "$TOKEN" ]; then
+      TOKEN=$(openssl rand -hex 16 2>/dev/null || od -vN 16 -An -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
+    fi
+    if [ -z "$TOKEN" ]; then
+      log "warning: failed to generate secure DEVBOX_WEB_TOKEN; skipping devbox-web setup"
+      WEB_READY=0
+    else
+      printf 'DEVBOX_WEB_AUTH=token\nDEVBOX_WEB_TOKEN=%s\n' "$TOKEN" > "$H/.devbox/web.env"
+      log "devbox-web: token auth, token in ~/.devbox/web.env"
+    fi
+  fi
+
+  if [ "$WEB_READY" = 1 ]; then
     chmod 0600 "$H/.devbox/web.env"
     chown "$U:$U" "$H/.devbox/web.env"
+
+    # URL helper used by the MOTD, the deploy summary and `devbox web`
+    if [ -f /opt/devbox/devbox-web-url.sh ] || [ -f /opt/devbox/provisioning/devbox-web-url.sh ]; then
+      WEB_URL_SRC=$([ -f /opt/devbox/devbox-web-url.sh ] && echo /opt/devbox/devbox-web-url.sh || echo /opt/devbox/provisioning/devbox-web-url.sh)
+      install -D -m 0755 -o "$U" -g "$U" "$WEB_URL_SRC" "$H/.devbox/bin/devbox-web-url"
+    fi
 
     # Install web gateway dependencies
     sudo -u "$U" -H bash -c "cd '$WEB_DIR' && (npm ci --omit=dev 2>/dev/null || npm install --omit=dev)" || true
@@ -261,11 +294,6 @@ if [ -d "/opt/devbox/web" ]; then
       systemctl --user -M "$U@" enable --now devbox-web.service 2>/dev/null || true
     fi
 
-    # If Tailscale is running, expose port 7681 securely with MagicDNS HTTPS inside Tailnet
-    if command -v tailscale >/dev/null 2>&1 && tailscale ip -4 >/dev/null 2>&1; then
-      log "configuring tailscale serve for devbox-web (port 7681)..."
-      timeout 5 tailscale serve --bg 7681 2>/dev/null || true
-    fi
   fi
 fi
 

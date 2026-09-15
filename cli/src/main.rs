@@ -9,6 +9,7 @@ mod session;
 mod sshcfg;
 mod term;
 mod upload;
+mod web;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -54,6 +55,24 @@ enum Command {
 
     /// Reset local terminal modes (disables stuck mouse tracking, bracketed paste, etc.)
     Reset,
+
+    /// Print the web gateway URL of a devbox and a QR code to open it on a phone
+    Web {
+        /// host alias (devbox config / ~/.ssh/config) or [user@]host
+        target: String,
+        /// port (overrides config)
+        #[arg(short, long)]
+        port: Option<u16>,
+        /// identity file (overrides config)
+        #[arg(short, long)]
+        identity: Option<String>,
+        /// print only the URL, no QR code
+        #[arg(long)]
+        no_qr: bool,
+        /// include the shared token in the URL (token auth mode only)
+        #[arg(long)]
+        with_token: bool,
+    },
 }
 
 #[tokio::main]
@@ -76,6 +95,16 @@ async fn main() -> Result<()> {
                 "[devbox] Terminal modes restored (mouse tracking & bracketed paste disabled)."
             );
             Ok(())
+        }
+        Some(Command::Web {
+            target,
+            port,
+            identity,
+            no_qr,
+            with_token,
+        }) => {
+            let resolved = config::resolve(&target, port, identity, None)?;
+            web::run(resolved, no_qr, with_token).await
         }
         None => {
             if let Some(target) = cli.target {

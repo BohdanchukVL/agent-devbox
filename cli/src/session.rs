@@ -4,7 +4,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use russh::client::{self, AuthResult, Handle};
 use russh::keys::{load_secret_key, PrivateKeyWithHashAlg, PublicKey};
-use russh::Channel;
+use russh::{Channel, ChannelMsg};
 use russh_sftp::client::SftpSession;
 use std::io::Write;
 use std::sync::Arc;
@@ -65,7 +65,8 @@ pub struct Ssh {
     pub inbox: String,
 }
 
-pub async fn connect(cfg: &Resolved) -> Result<Ssh> {
+/// TCP connect + host-key check + authentication. No channels are opened.
+pub async fn open(cfg: &Resolved) -> Result<Handle<ClientHandler>> {
     let ssh_config = Arc::new(client::Config {
         keepalive_interval: Some(std::time::Duration::from_secs(30)),
         ..Default::default()
@@ -79,6 +80,59 @@ pub async fn connect(cfg: &Resolved) -> Result<Ssh> {
         .with_context(|| format!("connect {}:{}", cfg.host, cfg.port))?;
 
     authenticate(&mut handle, cfg).await?;
+    Ok(handle)
+}
+
+/// Output of a remote command run via [`exec_capture`].
+pub struct ExecOutput {
+    pub stdout: String,
+    pub stderr: String,
+    /// exit status as reported by the server (255 if it never sent one)
+    pub status: u32,
+}
+
+/// Run `command` on the remote (no pty) and collect its output until the
+/// channel is closed.
+pub async fn exec_capture(handle: &Handle<ClientHandler>, command: &str) -> Result<ExecOutput> {
+    let mut channel = handle
+        .channel_open_session()
+        .await
+        .context("open exec channel")?;
+    channel
+        .exec(true, command)
+        .await
+        .with_context(|| format!("exec `{command}`"))?;
+
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut status: Option<u32> = None;
+    loop {
+        let Some(msg) = channel.wait().await else {
+            break;
+        };
+        match msg {
+            ChannelMsg::Data { data } => stdout.extend_from_slice(&data),
+            ChannelMsg::ExtendedData { data, .. } => stderr.extend_from_slice(&data),
+            ChannelMsg::ExitStatus { exit_status } => status = Some(exit_status),
+            ChannelMsg::Failure => bail!("remote refused to exec `{command}`"),
+            // OpenSSH sends exit-status before EOF; other servers may not, so
+            // keep reading after EOF until the status or Close arrives.
+            ChannelMsg::Eof if status.is_some() => break,
+            ChannelMsg::Close => break,
+            _ => {}
+        }
+    }
+    channel.close().await.ok();
+
+    Ok(ExecOutput {
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        status: status.unwrap_or(255),
+    })
+}
+
+pub async fn connect(cfg: &Resolved) -> Result<Ssh> {
+    let handle = open(cfg).await?;
 
     let shell = handle
         .channel_open_session()

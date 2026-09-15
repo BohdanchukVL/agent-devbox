@@ -144,6 +144,16 @@ if [ "${INSTALL_CLAUDE:-true}" = "true" ]; then
   fi
 fi
 
+# 4c. ccusage session tracker verification (when Claude or Codex enabled)
+if [ "${INSTALL_CLAUDE:-true}" = "true" ] || [ "${INSTALL_CODEX:-true}" = "true" ]; then
+  if sudo -u "$DEVBOX_USER" -H bash -c 'export PATH="$HOME/.npm-global/bin:$PATH"; command -v ccusage >/dev/null 2>&1'; then
+    CCUSAGE_VER=$(sudo -u "$DEVBOX_USER" -H bash -c 'export PATH="$HOME/.npm-global/bin:$PATH"; ccusage --version 2>&1 | head -n1' || true)
+    ok "ccusage session tracker is installed ($CCUSAGE_VER)"
+  else
+    warn "ccusage session tracker not found on PATH for user $DEVBOX_USER"
+  fi
+fi
+
 # 5. Docker daemon verification
 if [ "${INSTALL_DOCKER:-true}" = "true" ]; then
   if command -v docker >/dev/null 2>&1; then
@@ -169,6 +179,19 @@ if [ -d "$HOME_DIR/.devbox/web" ]; then
       ok "devbox-web.service is active (HTTP status: $HTTP_STATUS)"
     else
       warn "devbox-web gateway not responding on 7681 (status: $HTTP_STATUS)"
+    fi
+  fi
+
+  # Auth mode: tailnet identity (no token) once the machine joined the tailnet
+  WEB_AUTH=$(sed -n 's/^DEVBOX_WEB_AUTH=//p' "$HOME_DIR/.devbox/web.env" 2>/dev/null | tail -n1)
+  [ -n "$WEB_AUTH" ] || WEB_AUTH=token
+  ok "devbox-web auth mode: $WEB_AUTH"
+  if [ "$WEB_AUTH" = "tailscale" ]; then
+    TS_IP4=$(tailscale ip -4 2>/dev/null || true)
+    if [ -n "$TS_IP4" ] && ss -ltn 2>/dev/null | grep -q "${TS_IP4}:7681"; then
+      ok "devbox-web bound to the tailnet address ($TS_IP4:7681)"
+    else
+      fail "devbox-web is in tailscale auth mode but not listening on the tailnet address"
     fi
   fi
 fi

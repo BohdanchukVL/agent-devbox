@@ -62,6 +62,15 @@
       "customType": "regex",
       "fileMatch": ["^provisioning/versions\\.env$"],
       "matchStrings": [
+        "CCUSAGE_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      "datasourceTemplate": "npm",
+      "depNameTemplate": "ccusage"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^provisioning/versions\\.env$"],
+      "matchStrings": [
         "AST_GREP_VERSION=(?<currentValue>[0-9.]+)"
       ],
       "datasourceTemplate": "npm",

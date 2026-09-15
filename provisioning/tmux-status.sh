@@ -6,7 +6,7 @@
 #   tmux-status sys         → CPU % since the previous tick and RAM % in use (Linux /proc)
 render_bar() {
     _pct="$1"
-    _width="${2:-${AI_BAR_WIDTH:-10}}"
+    _width="${2:-${AI_BAR_WIDTH:-8}}"
     [ -z "$_pct" ] && return
     [ "$_pct" -lt 0 ] 2>/dev/null && _pct=0
     [ "$_pct" -gt 100 ] 2>/dev/null && _pct=100
@@ -24,7 +24,7 @@ render_bar() {
     _empty=$(( _width - _filled ))
 
     _char_fill="${AI_BAR_FILL:-■}"
-    _char_empty="${AI_BAR_EMPTY:-■}"
+    _char_empty="${AI_BAR_EMPTY:-·}"
 
     _bar=""
     _i=0
@@ -193,16 +193,14 @@ EOF
     case "$running_agent" in
     claude)
         # Everything comes from the statusLine hook (claude-statusline), which
-        # persists Claude Code's own session JSON per session_id. No transcript
-        # scraping, no undocumented ~/.claude.json fields, no busy heuristic:
-        # Claude Code exposes no reliable "busy" signal on disk.
+        # persists Claude Code's own session JSON per session_id and latest.json.
         status_dir="${DEVBOX_CLAUDE_STATUS_DIR:-$HOME/.devbox/claude-status}"
         cur_tok=""; win_size=""; cl_cost=""; has_rl=""
-        rl5=""
+        ctx_pct=""
+        rl5_pct=""; rl5_resets=""; rl7_pct=""
         sf=""; newest=""
         if [ -d "$status_dir" ]; then
-            # newest snapshot whose cwd / project dir matches this pane's dir or git
-            # root; compare real paths too, in case /workspace or the project is a symlink
+            [ -f "$status_dir/latest.json" ] && newest="$status_dir/latest.json"
             dir_real=$(cd "$dir" 2>/dev/null && pwd -P) || dir_real="$dir"
             proj_real=$(cd "$proj_dir" 2>/dev/null && pwd -P) || proj_real="$proj_dir"
             while IFS= read -r f; do
@@ -216,52 +214,85 @@ EOF
                     break
                 fi
             done < <(ls -t "$status_dir"/*.json 2>/dev/null)
+            [ -z "$sf" ] && sf="$newest"
         fi
 
-        if [ -n "$sf" ]; then
+        if [ -n "$sf" ] && [ -f "$sf" ]; then
             cl_data=$(jq -r '
               def s(x): if x == null then "-" else (x | tostring) end;
               [ s(.context_window.used_percentage | if . == null then null else floor end),
                 s(.context_window.current_usage
-                  | if . == null then null
+                  | if . == null then (.context_window.total_input_tokens // null)
                     else ((.input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0)) end),
                 s(.context_window.context_window_size),
                 s(.cost.total_cost_usd),
-                (if .rate_limits == null then "0" else "1" end)
+                (if .rate_limits == null then "0" else "1" end),
+                s(.rate_limits.five_hour.used_percentage | if . == null then null else floor end),
+                s(.rate_limits.five_hour.resets_at),
+                s(.rate_limits.seven_day.used_percentage | if . == null then null else floor end)
               ] | join("\t")' "$sf" 2>/dev/null)
-            IFS=$'\t' read -r _ cur_tok win_size cl_cost has_rl <<<"$cl_data"
+            IFS=$'\t' read -r ctx_pct cur_tok win_size cl_cost has_rl rl5_pct rl5_resets rl7_pct <<<"$cl_data"
+            [ "$ctx_pct" = "-" ] && ctx_pct=""
             [ "$cur_tok" = "-" ] && cur_tok=""
             [ "$win_size" = "-" ] && win_size=""
             [ "$cl_cost" = "-" ] && cl_cost=""
+            [ "$rl5_pct" = "-" ] && rl5_pct=""
+            [ "$rl5_resets" = "-" ] && rl5_resets=""
+            [ "$rl7_pct" = "-" ] && rl7_pct=""
         fi
 
-        # the 5h session limit is account-wide: take it from the newest snapshot
-        # whose window has not reset yet (a pane's own snapshot may be stale)
-        if [ -n "$newest" ]; then
-            now_ts=$(date +%s)
-            while IFS= read -r f; do
-                [ -n "$f" ] || continue
-                rl5=$(jq -r --argjson now "$now_ts" '
-                  .rate_limits.five_hour
-                  | if (. | type) != "object" or .used_percentage == null
-                       or (.resets_at != null and .resets_at < $now) then empty
-                    else (.used_percentage | floor | if . < 0 then 0 elif . > 100 then 100 else . end) end' "$f" 2>/dev/null)
-                [ -n "$rl5" ] && break
-            done < <(ls -t "$status_dir"/*.json 2>/dev/null)
+        # Determine the session limit / usage percentage:
+        now_ts=$(date +%s)
+        bar_pct=""
+        if [ -n "$rl5_pct" ]; then
+            # 5-hour rate limit from subscription
+            if [ -n "$rl5_resets" ] && [ "$rl5_resets" -lt "$now_ts" ] 2>/dev/null; then
+                bar_pct=0
+            else
+                bar_pct="$rl5_pct"
+            fi
         fi
 
-        # Layout: claude [bar = 5h session limit USED, fills up as you spend] N%  ctx-tokens/window  $cost
-        # The bar is the session limit, never the context window: context is the token label.
+        # If newest snapshot has fresher rate limits across panes, check newest
+        if [ -z "$bar_pct" ] && [ -n "$newest" ] && [ -f "$newest" ]; then
+            newest_rl=$(jq -r --argjson now "$now_ts" '
+              .rate_limits.five_hour
+              | if (. | type) != "object" or .used_percentage == null then empty
+                elif (.resets_at != null and .resets_at < $now) then 0
+                else (.used_percentage | floor | if . < 0 then 0 elif . > 100 then 100 else . end) end' "$newest" 2>/dev/null)
+            [ -n "$newest_rl" ] && bar_pct="$newest_rl"
+        fi
+
+        # Fallback to context window percentage if no 5h rate limit (e.g. API-key accounts)
+        if [ -z "$bar_pct" ] && [ -n "$ctx_pct" ]; then
+            bar_pct="$ctx_pct"
+        fi
+
+        # Fallback to ccusage billing blocks cache if available
+        if [ -z "$bar_pct" ] && [ -f /tmp/.devbox-ccusage-cache.json ]; then
+            cc_used=$(jq -r '
+              .blocks[0] | if . == null or .isActive != true then empty else
+                (.tokenLimitStatus.percentUsed // empty) end' /tmp/.devbox-ccusage-cache.json 2>/dev/null)
+            if [ -n "$cc_used" ]; then
+                bar_pct=$(awk -v u="$cc_used" 'BEGIN { if (u < 0) u = 0; if (u > 100) u = 100; printf "%d", u + 0.5 }')
+            fi
+        fi
+
+        # Layout: claude [bar = session/rate limit] N%  ctx-tokens/window  $cost
         out="#[fg=colour209,bold]claude#[default]"
-        if [ -z "$sf" ] && [ -z "$newest" ]; then
+        if [ -z "$sf" ] && [ -z "$newest" ] && [ -z "$bar_pct" ]; then
             out="$out #[fg=colour243]no statusLine#[default]"
         else
-            if [ -n "$rl5" ]; then
-                bar_str=$(render_bar "$rl5")
+            if [ -n "$bar_pct" ]; then
+                bar_str=$(render_bar "$bar_pct")
                 [ -n "$bar_str" ] && out="$out $bar_str"
             fi
             if [ -n "$cur_tok" ] && [ -n "$win_size" ]; then
                 out="$out #[fg=colour246]$(fmt_tokens "$cur_tok")/$(fmt_tokens "$win_size")#[default]"
+            fi
+            # 7-day rate limit warning if high (>80%)
+            if [ -n "$rl7_pct" ] && [ "$rl7_pct" -ge 80 ] 2>/dev/null; then
+                out="$out #[fg=colour203,bold]7d:${rl7_pct}%#[default]"
             fi
             # dollar cost only for API-key accounts; subscriptions report rate_limits instead
             if [ "$has_rl" != "1" ] && [ -n "$cl_cost" ]; then
@@ -322,30 +353,30 @@ EOF
             cx_tok=""
             cx_win=""
 
-            # Extract rate limits & tokens from active session if present
+            # Extract rate limits & tokens from active session if present (reverse grep for instant accuracy)
             if [ -n "$active_codex" ] && [ -f "$active_codex" ]; then
-                turn_state=$(tail -n 35 "$active_codex" 2>/dev/null | jq -s -r '
-                  [.[] | select(.payload.type=="task_started" or .payload.type=="task_complete")] | last | .payload.type // empty
-                ' 2>/dev/null)
+                turn_state=$( (tac "$active_codex" 2>/dev/null || tail -r "$active_codex" 2>/dev/null || tail -n 50 "$active_codex") | grep -m 1 -E '"type":"(task_started|task_complete)"' | jq -r '.payload.type // empty' 2>/dev/null)
                 [ "$turn_state" = "task_started" ] && cx_busy="⚡"
 
-                cx_data=$(tail -n 35 "$active_codex" 2>/dev/null | jq -s -r --argjson now "$now" '
-                  [.[] | select(.payload.type=="token_count" and .payload.rate_limits != null)] | last // null |
-                  if . == null then empty else
-                    (.payload.rate_limits.primary // {}) as $p |
-                    (.payload.rate_limits.secondary // {}) as $s |
-                    (if ($p.resets_at != null and $p.resets_at < $now) then 0 else ($p.used_percent // 0) end) as $p_used |
-                    (if ($s.resets_at != null and $s.resets_at < $now) then 0 else ($s.used_percent // 0) end) as $s_used |
-                    ([$p_used, $s_used] | max) as $max_used |
-                    (.payload.info.last_token_usage.total_tokens // 0) as $tok |
-                    (.payload.info.model_context_window // 258400) as $win |
-                    "\($max_used) \($tok) \($win)"
-                  end
-                ' 2>/dev/null)
-                if [ -n "$cx_data" ]; then
-                    read -r cx_used cx_tok cx_win <<EOF
+                cx_token_line=$( (tac "$active_codex" 2>/dev/null || tail -r "$active_codex" 2>/dev/null || tail -n 100 "$active_codex") | grep -m 1 '"type":"token_count"' 2>/dev/null)
+                if [ -n "$cx_token_line" ]; then
+                    cx_data=$(printf '%s' "$cx_token_line" | jq -r --argjson now "$now" '
+                      if .payload.type != "token_count" then empty else
+                        (.payload.rate_limits.primary // {}) as $p |
+                        (.payload.rate_limits.secondary // {}) as $s |
+                        (if ($p.resets_at != null and $p.resets_at < $now) then 0 else ($p.used_percent // 0) end) as $p_used |
+                        (if ($s.resets_at != null and $s.resets_at < $now) then 0 else ($s.used_percent // 0) end) as $s_used |
+                        ([$p_used, $s_used] | max) as $max_used |
+                        (.payload.info.last_token_usage.total_tokens // 0) as $tok |
+                        (.payload.info.model_context_window // 258400) as $win |
+                        "\($max_used) \($tok) \($win)"
+                      end
+                    ' 2>/dev/null)
+                    if [ -n "$cx_data" ]; then
+                        read -r cx_used cx_tok cx_win <<EOF
 $cx_data
 EOF
+                    fi
                 fi
             fi
 
@@ -353,29 +384,36 @@ EOF
             # Rate limits are account-wide, so get freshest limits from most recent session across the system.
             if [ -z "$cx_used" ]; then
                 for f in $(ls -td "$HOME/.codex/sessions"/*/*/*/*.jsonl 2>/dev/null | head -n 5); do
-                    global_rl=$(tail -n 35 "$f" 2>/dev/null | jq -s -r --argjson now "$now" '
-                      [.[] | select(.payload.type=="token_count" and .payload.rate_limits != null)] | last // null |
-                      if . == null then empty else
-                        (.payload.rate_limits.primary // {}) as $p |
-                        (.payload.rate_limits.secondary // {}) as $s |
-                        (if ($p.resets_at != null and $p.resets_at < $now) then 0 else ($p.used_percent // 0) end) as $p_used |
-                        (if ($s.resets_at != null and $s.resets_at < $now) then 0 else ($s.used_percent // 0) end) as $s_used |
-                        ([$p_used, $s_used] | max) as $max_used |
-                        "\($max_used)"
-                      end
-                    ' 2>/dev/null)
-                    if [ -n "$global_rl" ]; then
-                        cx_used="$global_rl"
-                        cx_tok=0
-                        cx_win=258400
-                        break
+                    global_line=$( (tac "$f" 2>/dev/null || tail -r "$f" 2>/dev/null || tail -n 100 "$f") | grep -m 1 '"type":"token_count"' 2>/dev/null)
+                    if [ -n "$global_line" ]; then
+                        global_rl=$(printf '%s' "$global_line" | jq -r --argjson now "$now" '
+                          if .payload.type != "token_count" then empty else
+                            (.payload.rate_limits.primary // {}) as $p |
+                            (.payload.rate_limits.secondary // {}) as $s |
+                            (if ($p.resets_at != null and $p.resets_at < $now) then 0 else ($p.used_percent // 0) end) as $p_used |
+                            (if ($s.resets_at != null and $s.resets_at < $now) then 0 else ($s.used_percent // 0) end) as $s_used |
+                            ([$p_used, $s_used] | max) as $max_used |
+                            "\($max_used)"
+                          end
+                        ' 2>/dev/null)
+                        if [ -n "$global_rl" ]; then
+                            cx_used="$global_rl"
+                            cx_tok=0
+                            cx_win=258400
+                            break
+                        fi
                     fi
                 done
             fi
 
             # bar = bottleneck rate limit USED (max of primary/secondary)
-            if [ -n "$cx_used" ]; then
+            # or context window percentage if rate limits are not present
+            if [ -n "$cx_used" ] && [ "$cx_used" != "0" ]; then
                 cx_lim=$(awk -v u="$cx_used" 'BEGIN { if (u < 0) u = 0; if (u > 100) u = 100; printf "%d", u }')
+            elif [ -n "$cx_tok" ] && [ "$cx_tok" -gt 0 ] 2>/dev/null && [ -n "$cx_win" ] && [ "$cx_win" -gt 0 ] 2>/dev/null; then
+                cx_lim=$(( (cx_tok * 100) / cx_win ))
+            elif [ -n "$cx_used" ]; then
+                cx_lim=0
             fi
             [ "$cx_tok" -ge 0 ] 2>/dev/null || cx_tok=0
             [ "$cx_win" -gt 0 ] 2>/dev/null || cx_win=258400
@@ -401,13 +439,11 @@ EOF
         done
 
         agy_busy=""
-        agy_pct=""
-        agy_tok_str=""
         agy_conv_id=""
 
         if [ -n "$agy_dir" ]; then
             if [ -f "$agy_dir/history.jsonl" ]; then
-                agy_info=$(tail -n 100 "$agy_dir/history.jsonl" | jq -s -r --arg d "$proj_dir" --arg raw "$dir" '
+                agy_info=$(tail -n 50 "$agy_dir/history.jsonl" | jq -s -r --arg d "$proj_dir" --arg raw "$dir" '
                   [.[] | select((.workspace == $d or .workspace == $raw or ($d != "" and ((.workspace // "") | endswith($d)))) and .conversationId != null)] | last // empty |
                   "\(.conversationId)"
                 ' 2>/dev/null)
@@ -426,31 +462,18 @@ EOF
             if [ -n "$agy_conv_id" ]; then
                 trans_file="$agy_dir/brain/$agy_conv_id/.system_generated/logs/transcript.jsonl"
                 if [ -f "$trans_file" ]; then
-                    bytes=$(stat -c %s "$trans_file" 2>/dev/null || stat -f %z "$trans_file" 2>/dev/null || echo 0)
-                    if [ "$bytes" -gt 0 ] 2>/dev/null; then
-                        approx_tok=$(( bytes / 4 ))
-                        max_tok=1000000
-                        agy_pct=$(( (approx_tok * 100) / max_tok ))
-                        agy_tok_str="$(fmt_tokens "$approx_tok")/$(fmt_tokens "$max_tok")"
-
-                        agy_state=$(tail -n 1 "$trans_file" 2>/dev/null | jq -r '
-                          if .type == "USER_INPUT" then "busy"
-                          elif .type == "PLANNER_RESPONSE" and (.tool_calls != null and (.tool_calls | length > 0)) then "busy"
-                          elif .type != "PLANNER_RESPONSE" then "busy"
-                          else "idle" end
-                        ' 2>/dev/null)
-                        [ "$agy_state" = "busy" ] && agy_busy="⚡"
-                    fi
+                    agy_state=$( (tac "$trans_file" 2>/dev/null || tail -r "$trans_file" 2>/dev/null || tail -n 10 "$trans_file") | head -n 1 | jq -r '
+                      if .type == "USER_INPUT" then "busy"
+                      elif .type == "PLANNER_RESPONSE" and (.tool_calls != null and (.tool_calls | length > 0)) then "busy"
+                      elif .type != "PLANNER_RESPONSE" then "busy"
+                      else "idle" end
+                    ' 2>/dev/null)
+                    [ "$agy_state" = "busy" ] && agy_busy="⚡"
                 fi
             fi
         fi
 
-        [ -z "$agy_pct" ] && agy_pct=0 && agy_tok_str="0/1M"
-
-        bar_str=$(render_bar "$agy_pct")
         out="#[fg=colour141,bold]agy${agy_busy}#[default]"
-        [ -n "$bar_str" ] && out="$out $bar_str"
-        [ -n "$agy_tok_str" ] && out="$out #[fg=colour246]$agy_tok_str#[default]"
         print_ai "$out"
         ;;
     esac

@@ -1,6 +1,6 @@
 [package]
 name = "devbox"
-version = "0.3.4"
+version = "0.4.1"
 edition = "2021"
 description = "SSH-compatible remote terminal with a native clipboard and file bridge"
 license = "MIT"
@@ -17,6 +17,8 @@ base64 = "0.22"
 png = "0.17"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+qrcode = { version = "0.14", default-features = false }
 toml = "0.8"
 dirs = "6"
 rpassword = "7"

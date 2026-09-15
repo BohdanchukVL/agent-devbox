@@ -280,6 +280,7 @@ if command -v jq >/dev/null 2>&1; then
     --arg claude "$(get_user_tool_ver claude --version)" \
     --arg opencode "$(get_user_tool_ver opencode --version)" \
     --arg agy "$(get_user_tool_ver agy --version)" \
+    --arg ccusage "$(get_user_tool_ver ccusage --version)" \
     --arg playwright "$(get_user_tool_ver playwright --version)" \
     --arg starship "$(get_tool_ver starship --version)" \
     --arg zoxide "$(get_tool_ver zoxide --version)" \
@@ -305,6 +306,7 @@ if command -v jq >/dev/null 2>&1; then
         claude: $claude,
         opencode: $opencode,
         antigravity: $agy,
+        ccusage: $ccusage,
         playwright: $playwright
       }
     }' > /etc/devbox/manifest.json

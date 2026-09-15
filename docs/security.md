@@ -62,10 +62,12 @@ accordingly.
 ## Web Gateway Security (`web/`)
 
 The `devbox-web` companion service runs as an unprivileged user systemd service:
-- **Binding**: Binds to `HOST=127.0.0.1` on port `7681` by default. Accessible externally via `tailscale serve --bg 7681` (which provides HTTPS under your tailnet name) or an SSH local port forward (`ssh -L 7681:127.0.0.1:7681 dev@<ip>`).
-- **Authentication**: Fail-closed token-based authentication via `DEVBOX_WEB_TOKEN` stored in `~/.devbox/web.env` (permissions `0600`). If the token is unset or empty, the server refuses to start. Constant-time comparison (`crypto.timingSafeEqual`) is enforced for API and WebSocket token checks.
+- **Authentication modes** (`DEVBOX_WEB_AUTH` in `~/.devbox/web.env`, chosen at provisioning):
+  - `tailscale` (default once the machine joined the tailnet): no shared secret. Every API call and WebSocket handshake is attributed to a tailnet identity: `tailscale whois` on the peer address for direct connections, or the `Tailscale-User-Login` header that `tailscale serve` injects on loopback. Tagged (machine) nodes are refused; `DEVBOX_WEB_USERS` restricts access to listed logins. The boundary is the same one the cookie gave before: a device in your tailnet that the ACL lets reach port 7681. Loopback headers are trusted, so a local process running as `dev` could forge an identity, which grants nothing it does not already have.
+  - `token`: fail-closed shared secret via `DEVBOX_WEB_TOKEN` (cookie, `Authorization: Bearer`, `X-Devbox-Token`, or `?token=`), constant-time compared. Used when there is no tailnet, reached over `ssh -L 7681:127.0.0.1:7681 dev@<ip>`.
+- **Binding**: `HOST=auto` binds the tailnet addresses plus loopback in `tailscale` mode, loopback only in `token` mode. `tailscale serve --bg 7681` is optional and adds HTTPS under the tailnet name.
+- **DNS rebinding guard**: in `tailscale` mode the `Host` header must be one of this node's names or addresses (MagicDNS name, short hostname, tailnet IPs, loopback, or `DEVBOX_ALLOWED_HOSTS`); anything else is refused with 421 before any other processing. This closes the rebinding gap that the token used to cover.
 - **CSWSH Protection**: Cross-Site WebSocket Hijacking protection by strictly validating the `Origin` header against the exact `Host` header, `X-Forwarded-Host`, or configured `DEVBOX_ALLOWED_ORIGIN`. Unrestricted wildcard domain suffixes are rejected.
-- **DNS Rebinding & Token Primacy**: Origin-to-Host validation does not protect against DNS rebinding (where an attacker's domain resolves to `127.0.0.1`, matching Origin and Host). Therefore, secret token authentication (`DEVBOX_WEB_TOKEN`) is the primary, indispensable boundary protecting WebSockets and APIs; Origin checks serve as defense-in-depth against simple cross-origin requests from third-party websites.
 - **Command Injection Prevention**: Uses argument array execution (`spawnSync`/`execFileSync`) rather than shell string interpolation for `tmux` commands, combined with strict session name validation (`/^[a-zA-Z0-9_.-]+$/`).
 - **Subresource Integrity (SRI)**: CDN fallbacks for `@xterm/xterm` scripts include cryptographic SRI hashes.
 

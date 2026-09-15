@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import { WebSocketServer } from 'ws';
 import pty from 'node-pty';
 import Busboy from 'busboy';
@@ -12,12 +12,24 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = parseInt(process.env.PORT || '7681', 10);
+// "auto": in tailscale mode bind the tailnet addresses plus loopback, otherwise loopback only.
 const HOST = process.env.HOST || '127.0.0.1';
 const AUTH_TOKEN = process.env.DEVBOX_WEB_TOKEN || process.env.AUTH_TOKEN || (process.env.DEVBOX_WEB_TEST ? 'test-secret-token' : '');
 const ALLOWED_ORIGIN = process.env.DEVBOX_ALLOWED_ORIGIN || '';
+const TAILSCALE_BIN = process.env.DEVBOX_TAILSCALE_BIN || 'tailscale';
+// Auth modes:
+//   tailscale  the peer is identified by the tailnet (`tailscale whois` on the source
+//              address, or the identity headers injected by `tailscale serve`); no secret.
+//   token      shared secret via cookie / header / query (the pre-0.4.1 behaviour).
+// Default: token when a token is configured, tailscale otherwise.
+const AUTH_MODE = (process.env.DEVBOX_WEB_AUTH || (AUTH_TOKEN ? 'token' : 'tailscale')).toLowerCase();
 
-if (!AUTH_TOKEN) {
-  console.error('[devbox-web ERROR] DEVBOX_WEB_TOKEN (or AUTH_TOKEN) environment variable is required. Refusing to start without authentication.');
+if (AUTH_MODE !== 'token' && AUTH_MODE !== 'tailscale') {
+  console.error(`[devbox-web ERROR] DEVBOX_WEB_AUTH must be "tailscale" or "token", got "${AUTH_MODE}".`);
+  process.exit(1);
+}
+if (AUTH_MODE === 'token' && !AUTH_TOKEN) {
+  console.error('[devbox-web ERROR] DEVBOX_WEB_TOKEN (or AUTH_TOKEN) environment variable is required in token auth mode. Refusing to start without authentication.');
   process.exit(1);
 }
 
@@ -87,11 +99,9 @@ function isAllowedOrigin(origin, hostHeader, forwardedHost) {
     const originHost = originUrl.host;
     const originHostname = originUrl.hostname;
 
-    // Strict host match against Host header or X-Forwarded-Host (e.g. from tailscale serve)
     if (originHost === hostHeader || originHostname === hostHeader) return true;
     if (forwardedHost && (originHost === forwardedHost || originHostname === forwardedHost)) return true;
 
-    // Compare hostnames ignoring port if headers include port
     const hostNameOnly = (hostHeader || '').split(':')[0];
     const fwdNameOnly = (forwardedHost || '').split(':')[0];
     if (originHostname === hostNameOnly || (fwdNameOnly && originHostname === fwdNameOnly)) return true;
@@ -102,7 +112,7 @@ function isAllowedOrigin(origin, hostHeader, forwardedHost) {
 }
 
 function safeTokenCompare(input) {
-  if (typeof input !== 'string' || !input) return false;
+  if (typeof input !== 'string' || !input || !AUTH_TOKEN) return false;
   const bufA = Buffer.from(input);
   const bufB = Buffer.from(AUTH_TOKEN);
   if (bufA.length !== bufB.length) return false;
@@ -126,6 +136,7 @@ function parseCookies(cookieHeader) {
   return list;
 }
 
+// Shared-secret check (token auth mode).
 function checkAuth(req, url) {
   const authHeader = req.headers['authorization'] || '';
   if (authHeader.startsWith('Bearer ')) {
@@ -147,15 +158,183 @@ function checkAuth(req, url) {
   return false;
 }
 
-const server = http.createServer((req, res) => {
+// ── Tailnet identity (tailscale auth mode) ────────────────────────────────────
+
+const WHOIS_TTL_MS = 60 * 1000;
+const STATUS_TTL_MS = 5 * 60 * 1000;
+const whoisCache = new Map();
+let statusCache = { at: 0, self: null };
+
+function tailscaleJson(args, timeout = 3000) {
+  return new Promise(resolve => {
+    execFile(TAILSCALE_BIN, args, { timeout, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+      if (err) return resolve(null);
+      try {
+        resolve(JSON.parse(stdout));
+      } catch {
+        resolve(null);
+      }
+    });
+  });
+}
+
+function parseSelf(status) {
+  if (!status || typeof status !== 'object') return null;
+  const self = status.Self || {};
+  return {
+    backendState: status.BackendState || '',
+    ips: Array.isArray(self.TailscaleIPs) ? self.TailscaleIPs.map(String) : [],
+    dnsName: String(self.DNSName || '').replace(/\.$/, '').toLowerCase(),
+    hostName: String(self.HostName || '').toLowerCase()
+  };
+}
+
+function tailscaleSelfSync() {
+  try {
+    const out = execFileSync(TAILSCALE_BIN, ['status', '--json'], {
+      encoding: 'utf8',
+      timeout: 5000,
+      stdio: ['ignore', 'pipe', 'ignore']
+    });
+    const self = parseSelf(JSON.parse(out));
+    if (self) statusCache = { at: Date.now(), self };
+    return self;
+  } catch {
+    return null;
+  }
+}
+
+async function tailscaleSelf() {
+  if (statusCache.self && Date.now() - statusCache.at < STATUS_TTL_MS) return statusCache.self;
+  const self = parseSelf(await tailscaleJson(['status', '--json']));
+  if (self) statusCache = { at: Date.now(), self };
+  return self || statusCache.self;
+}
+
+function normalizeIp(addr) {
+  let ip = String(addr || '').trim();
+  if (ip.startsWith('::ffff:')) ip = ip.slice(7);
+  const zone = ip.indexOf('%');
+  if (zone !== -1) ip = ip.slice(0, zone);
+  return ip;
+}
+
+function isLoopback(ip) {
+  return ip === '::1' || ip.startsWith('127.');
+}
+
+// Host header → hostname (no port, no IPv6 brackets), lower-cased.
+function hostnameOf(hostHeader) {
+  const raw = String(hostHeader || '').trim().toLowerCase();
+  if (!raw) return '';
+  if (raw.startsWith('[')) {
+    const end = raw.indexOf(']');
+    return end === -1 ? '' : raw.slice(1, end);
+  }
+  const colon = raw.indexOf(':');
+  if (colon !== -1 && raw.indexOf(':', colon + 1) === -1) return raw.slice(0, colon);
+  return raw; // bare IPv6 without brackets or plain name
+}
+
+function envList(name) {
+  return String(process.env[name] || '')
+    .split(',')
+    .map(s => s.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+// DNS-rebinding guard for tailscale mode: only names/addresses this node answers to.
+async function isAllowedHost(hostHeader) {
+  const name = hostnameOf(hostHeader);
+  if (!name) return false;
+  if (name === 'localhost' || name === '127.0.0.1' || name === '::1') return true;
+  if (envList('DEVBOX_ALLOWED_HOSTS').includes(name)) return true;
+  const self = await tailscaleSelf();
+  if (!self) return false;
+  if (self.ips.map(ip => ip.toLowerCase()).includes(name)) return true;
+  if (self.dnsName && name === self.dnsName) return true;
+  if (self.hostName && name === self.hostName) return true; // MagicDNS short name
+  return false;
+}
+
+async function whois(ip) {
+  const cached = whoisCache.get(ip);
+  if (cached && Date.now() - cached.at < WHOIS_TTL_MS) return cached.identity;
+  const data = await tailscaleJson(['whois', '--json', ip]);
+  let identity = null;
+  if (data && typeof data === 'object') {
+    const profile = data.UserProfile || {};
+    const node = data.Node || {};
+    identity = {
+      login: String(profile.LoginName || ''),
+      name: String(profile.DisplayName || ''),
+      node: String(node.Name || '').replace(/\.$/, ''),
+      tagged: Array.isArray(node.Tags) && node.Tags.length > 0,
+      via: 'whois'
+    };
+  }
+  whoisCache.set(ip, { at: Date.now(), identity });
+  return identity;
+}
+
+// Who is on the other end of this connection, according to the tailnet.
+async function resolveIdentity(req) {
+  const remote = normalizeIp(req.socket?.remoteAddress);
+  if (!remote) return null;
+  if (isLoopback(remote)) {
+    // `tailscale serve` terminates the connection locally and forwards the identity
+    // in headers. Anything else on loopback (ssh -L, local processes) carries no identity.
+    const login = req.headers['tailscale-user-login'];
+    if (!login) return null;
+    return {
+      login: String(login),
+      name: String(req.headers['tailscale-user-name'] || ''),
+      node: '',
+      tagged: false,
+      via: 'serve'
+    };
+  }
+  return whois(remote);
+}
+
+// Humans only by default; DEVBOX_WEB_USERS narrows it to specific logins.
+function identityAllowed(identity) {
+  if (!identity || identity.tagged) return false;
+  const login = String(identity.login || '').toLowerCase();
+  if (!login || login === 'tagged-devices') return false;
+  const users = envList('DEVBOX_WEB_USERS');
+  if (users.length) return users.includes(login);
+  return true;
+}
+
+async function authorize(req, url) {
+  if (AUTH_MODE === 'token') {
+    return { ok: checkAuth(req, url), identity: null };
+  }
+  const identity = await resolveIdentity(req);
+  return { ok: identityAllowed(identity), identity };
+}
+
+const UNAUTHORIZED_MESSAGE = AUTH_MODE === 'token'
+  ? 'Unauthorized: invalid or missing auth token'
+  : 'Unauthorized: no tailnet identity for this connection';
+
+// ── HTTP ──────────────────────────────────────────────────────────────────────
+
+async function handleRequest(req, res) {
   const hostHeader = req.headers.host || 'localhost';
   const forwardedHost = req.headers['x-forwarded-host'];
   const url = new URL(req.url, `http://${hostHeader}`);
   const pathname = url.pathname;
   const origin = req.headers.origin;
 
-  // Clean URL auth bootstrap: if visiting root with ?token=..., set HttpOnly SameSite cookie and redirect
-  if ((pathname === '/' || pathname === '/index.html') && url.searchParams.has('token')) {
+  if (AUTH_MODE === 'tailscale' && !(await isAllowedHost(hostHeader))) {
+    res.writeHead(421, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Misdirected: unexpected Host header' }));
+    return;
+  }
+
+  if (AUTH_MODE === 'token' && (pathname === '/' || pathname === '/index.html') && url.searchParams.has('token')) {
     const tokenParam = url.searchParams.get('token');
     if (safeTokenCompare(tokenParam)) {
       url.searchParams.delete('token');
@@ -170,7 +349,6 @@ const server = http.createServer((req, res) => {
     }
   }
 
-  // Origin check & CORS: restrict to same-origin / allowed hosts
   if (origin && isAllowedOrigin(origin, hostHeader, forwardedHost)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -184,21 +362,23 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Reject state-changing requests from foreign origins (CSRF protection)
   if (req.method === 'POST' && origin && !isAllowedOrigin(origin, hostHeader, forwardedHost)) {
     res.writeHead(403, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Forbidden: cross-origin POST not allowed' }));
     return;
   }
 
-  // Token authentication check for API routes
-  if (pathname.startsWith('/api/') && !checkAuth(req, url)) {
-    res.writeHead(401, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Unauthorized: invalid or missing auth token' }));
-    return;
+  let identity = null;
+  if (pathname.startsWith('/api/')) {
+    const auth = await authorize(req, url);
+    if (!auth.ok) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: UNAUTHORIZED_MESSAGE }));
+      return;
+    }
+    identity = auth.identity;
   }
 
-  // 1. Upload API
   if (req.method === 'POST' && pathname === '/api/upload') {
     const session = sanitizeSessionName(url.searchParams.get('session') || 'main');
     ensureTmuxSession(session);
@@ -208,7 +388,6 @@ const server = http.createServer((req, res) => {
     let uploadedFile = null;
     const filePromises = [];
 
-    // Use .devbox-inbox in cwd if inside /workspace or git project, else ~/.devbox/inbox
     const isProject = cwd.startsWith('/workspace') || fs.existsSync(path.join(cwd, '.git'));
     const inboxDir = isProject
       ? path.join(cwd, '.devbox-inbox')
@@ -242,7 +421,6 @@ const server = http.createServer((req, res) => {
             fullPath: destPath
           };
 
-          // Type the path into the active tmux pane
           try {
             execFileSync('tmux', ['send-keys', '-t', session, '-l', `${relativePath} `]);
           } catch (e) {
@@ -279,7 +457,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // 2. Actions API (zoom, next-window, etc.)
   if (req.method === 'POST' && pathname === '/api/action') {
     let body = '';
     req.on('data', chunk => { body += chunk; });
@@ -306,7 +483,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // 3. Status API
   if (req.method === 'GET' && pathname === '/api/status') {
     const session = sanitizeSessionName(url.searchParams.get('session') || 'main');
     let cwd = '';
@@ -314,11 +490,17 @@ const server = http.createServer((req, res) => {
       cwd = getPaneCwd(session);
     } catch {}
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, session, cwd, node: process.version }));
+    res.end(JSON.stringify({
+      ok: true,
+      session,
+      cwd,
+      node: process.version,
+      auth: AUTH_MODE,
+      user: identity ? identity.login : null
+    }));
     return;
   }
 
-  // 4. Static files (public/ and vendor packages)
   let targetPath;
   if (pathname === '/' || pathname === '/index.html') {
     targetPath = path.join(PUBLIC_DIR, 'index.html');
@@ -342,12 +524,65 @@ const server = http.createServer((req, res) => {
     res.writeHead(404, { 'Content-Type': 'text/plain' });
     res.end('Not found');
   }
-});
+}
 
-// WebSocket Server for Terminal stream
-const wss = new WebSocketServer({ server });
+function requestListener(req, res) {
+  handleRequest(req, res).catch(err => {
+    console.error('[devbox-web] request failed:', err);
+    if (!res.headersSent) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+    }
+    res.end(JSON.stringify({ error: 'Internal error' }));
+  });
+}
 
-// Heartbeat ping interval (30s)
+// ── WebSocket ─────────────────────────────────────────────────────────────────
+
+const wss = new WebSocketServer({ noServer: true });
+
+function rejectUpgrade(socket, code, reason) {
+  try {
+    socket.write(`HTTP/1.1 ${code} ${reason}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+  } catch {}
+  socket.destroy();
+}
+
+async function handleUpgrade(req, socket, head) {
+  const hostHeader = req.headers.host || 'localhost';
+  const forwardedHost = req.headers['x-forwarded-host'];
+  const url = new URL(req.url, `http://${hostHeader}`);
+  const origin = req.headers.origin;
+
+  if (AUTH_MODE === 'tailscale' && !(await isAllowedHost(hostHeader))) {
+    console.warn(`[ws] rejected connection: unexpected host "${hostHeader}"`);
+    rejectUpgrade(socket, 421, 'Misdirected Request');
+    return;
+  }
+  if (origin && !isAllowedOrigin(origin, hostHeader, forwardedHost)) {
+    console.warn(`[ws] rejected connection: unauthorized origin "${origin}" for host "${hostHeader}" (forwarded: "${forwardedHost || 'none'}")`);
+    rejectUpgrade(socket, 403, 'Forbidden');
+    return;
+  }
+  const auth = await authorize(req, url);
+  if (!auth.ok) {
+    console.warn(`[ws] rejected connection: ${UNAUTHORIZED_MESSAGE}`);
+    rejectUpgrade(socket, 401, 'Unauthorized');
+    return;
+  }
+  req.identity = auth.identity;
+  wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req));
+}
+
+function upgradeListener(req, socket, head) {
+  handleUpgrade(req, socket, head).catch(err => {
+    console.error('[ws] upgrade failed:', err);
+    rejectUpgrade(socket, 500, 'Internal Server Error');
+  });
+}
+
+const server = http.createServer(requestListener);
+server.on('upgrade', upgradeListener);
+
 const pingInterval = setInterval(() => {
   wss.clients.forEach(ws => {
     if (ws.isAlive === false) {
@@ -365,23 +600,8 @@ wss.on('close', () => {
 
 wss.on('connection', (ws, req) => {
   const hostHeader = req.headers.host || 'localhost';
-  const forwardedHost = req.headers['x-forwarded-host'];
   const url = new URL(req.url, `http://${hostHeader}`);
-  const origin = req.headers.origin;
-
-  // Cross-Site WebSocket Hijacking (CSWSH) protection
-  if (origin && !isAllowedOrigin(origin, hostHeader, forwardedHost)) {
-    console.warn(`[ws] rejected connection: unauthorized origin "${origin}" for host "${hostHeader}" (forwarded: "${forwardedHost || 'none'}")`);
-    ws.close(1008, 'Origin not allowed');
-    return;
-  }
-
-  // Token authentication check
-  if (!checkAuth(req, url)) {
-    console.warn('[ws] rejected connection: unauthorized token');
-    ws.close(1008, 'Unauthorized');
-    return;
-  }
+  const who = req.identity ? ` as ${req.identity.login} (${req.identity.via})` : '';
 
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
@@ -391,10 +611,6 @@ wss.on('connection', (ws, req) => {
   const rows = parseInt(url.searchParams.get('rows') || '30', 10);
   const customSession = url.searchParams.get('session');
 
-  // Client session topology:
-  // If a specific custom session is explicitly requested, honor it.
-  // Otherwise, create a unique linked session per client connection joined to the 'main' window group.
-  // This gives each tab/device independent terminal dimensions, scrollback, and cursor without collision.
   let sessionName;
   let isEphemeral = false;
 
@@ -409,9 +625,8 @@ wss.on('connection', (ws, req) => {
     isEphemeral = true;
   }
 
-  console.log(`[ws] client connected (${clientType}) -> session "${sessionName}" [${cols}x${rows}]`);
+  console.log(`[ws] client connected (${clientType})${who} -> session "${sessionName}" [${cols}x${rows}]`);
 
-  // Inform frontend of canonical session name so actions/uploads map to this client's linked session
   ws.send(JSON.stringify({ type: 'session', session: sessionName }));
 
   const term = pty.spawn('tmux', ['attach-session', '-t', sessionName], {
@@ -455,7 +670,6 @@ wss.on('connection', (ws, req) => {
       term.kill();
     } catch {}
     if (isEphemeral) {
-      // Destroy temporary linked session, preserving 'main' and all background processes
       spawnSync('tmux', ['kill-session', '-t', sessionName], { stdio: 'ignore' });
     }
   });
@@ -465,10 +679,61 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-export { server, wss, parseCookies, checkAuth, isAllowedOrigin, safeTokenCompare };
+// ── Listening ─────────────────────────────────────────────────────────────────
+
+// Addresses to bind. In tailscale mode with HOST=auto: every tailnet address of this
+// node plus loopback (for `tailscale serve` and ssh -L); otherwise loopback only.
+function listenAddresses() {
+  if (HOST !== 'auto') return [HOST];
+  if (AUTH_MODE !== 'tailscale') return ['127.0.0.1'];
+  const self = tailscaleSelfSync();
+  if (!self || self.backendState !== 'Running' || self.ips.length === 0) {
+    throw new Error('tailscale is not running or has no address yet (HOST=auto needs a joined tailnet)');
+  }
+  return [...self.ips, '127.0.0.1'];
+}
+
+function startListening() {
+  if (AUTH_MODE === 'tailscale' && !tailscaleSelfSync()) {
+    console.error(`[devbox-web ERROR] auth mode "tailscale" but "${TAILSCALE_BIN} status --json" is not available. Refusing to start.`);
+    process.exit(1);
+  }
+  let addresses;
+  try {
+    addresses = listenAddresses();
+  } catch (err) {
+    console.error(`[devbox-web ERROR] ${err.message}`);
+    process.exit(1);
+  }
+  addresses.forEach((address, index) => {
+    const srv = index === 0 ? server : http.createServer(requestListener);
+    if (index !== 0) srv.on('upgrade', upgradeListener);
+    srv.on('error', err => {
+      console.error(`[devbox-web ERROR] cannot listen on ${address}:${PORT}: ${err.message}`);
+      process.exit(1);
+    });
+    srv.listen(PORT, address, () => {
+      const shown = address.includes(':') ? `[${address}]` : address;
+      console.log(`[devbox-web] server listening at http://${shown}:${PORT} (auth: ${AUTH_MODE})`);
+    });
+  });
+}
+
+export {
+  server,
+  wss,
+  parseCookies,
+  checkAuth,
+  isAllowedOrigin,
+  safeTokenCompare,
+  AUTH_MODE,
+  hostnameOf,
+  isAllowedHost,
+  resolveIdentity,
+  identityAllowed,
+  authorize
+};
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
-  server.listen(PORT, HOST, () => {
-    console.log(`[devbox-web] server listening at http://${HOST}:${PORT}`);
-  });
+  startListening();
 }

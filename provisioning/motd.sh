@@ -53,6 +53,11 @@ else
   fi
 fi
 
+web_url=""
+if [ -e /etc/devbox/.provisioned ] && [ -x "/home/${DEVBOX_USER:-dev}/.devbox/bin/devbox-web-url" ]; then
+  web_url=$(HOME="/home/${DEVBOX_USER:-dev}" "/home/${DEVBOX_USER:-dev}/.devbox/bin/devbox-web-url" --short 2>/dev/null || true)
+fi
+
 line() { printf "│ %-40s │\n" "$1"; }
 
 echo "┌──────────────────────────────────────────┐"
@@ -65,6 +70,7 @@ line "Claude Code: $claude_status"
 line "Antigravity: $agy_status"
 line "Browser: $browser_status"
 line "Tailscale: $ts_status"
+[ -n "$web_url" ] && line "Web: $web_url"
 line ""
 line "Next steps:"
 line "  gh auth login"
