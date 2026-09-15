@@ -6,18 +6,21 @@
 #   devbox-web-url                 http://agent-devbox.tailxyz.ts.net:7681/
 #   devbox-web-url --short         http://agent-devbox:7681/  (MagicDNS short name)
 #   devbox-web-url --with-token    appends ?token=… in token auth mode
+#   devbox-web-url --qr            also draws the URL as a QR code (qrencode)
 #   devbox-web-url --json          {"url":"…","auth":"tailscale|token","via":"serve|tailnet|local"}
 set -euo pipefail
 
 WITH_TOKEN=0
 JSON=0
 SHORT=0
+QR=0
 for arg in "$@"; do
   case "$arg" in
     --with-token) WITH_TOKEN=1 ;;
     --json) JSON=1 ;;
     --short) SHORT=1 ;;
-    *) echo "usage: devbox-web-url [--short] [--with-token] [--json]" >&2; exit 2 ;;
+    --qr) QR=1 ;;
+    *) echo "usage: devbox-web-url [--short] [--with-token] [--qr] [--json]" >&2; exit 2 ;;
   esac
 done
 
@@ -79,5 +82,13 @@ else
   echo "$url"
   if [ "$via" = local ]; then
     echo "gateway is not on the tailnet; reach it with: ssh -L $PORT:127.0.0.1:$PORT <user>@<host>" >&2
+  fi
+  if [ "$QR" = 1 ]; then
+    if command -v qrencode >/dev/null 2>&1; then
+      echo
+      qrencode -t UTF8 -m 2 "$url"
+    else
+      echo "qrencode is not installed (sudo apt-get install -y qrencode); use \`devbox web\` from your laptop instead" >&2
+    fi
   fi
 fi

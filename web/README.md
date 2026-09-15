@@ -48,7 +48,7 @@ Listening on port `7681`. In `tailscale` mode the gateway binds the tailnet addr
 
 ```bash
 devbox web dev@<host>          # from your laptop (CLI)
-~/.devbox/bin/devbox-web-url   # on the machine; --with-token appends the token in token mode
+~/.devbox/bin/devbox-web-url --qr   # on the machine; --with-token appends the token in token mode
 ```
 
 Without Tailscale, reach it over SSH: `ssh -L 7681:127.0.0.1:7681 dev@<host>` and open `http://127.0.0.1:7681/?token=<token>` (token in `~/.devbox/web.env`).

@@ -31,7 +31,7 @@ fi
 log "installing base packages"
 apt-get update -y
 apt-get install -y --no-install-recommends \
-  git curl wget jq unzip zip ripgrep fzf tmux htop bubblewrap \
+  git curl wget jq unzip zip ripgrep fzf tmux htop bubblewrap qrencode \
   rsync socat dnsutils strace ncdu \
   build-essential ca-certificates gnupg \
   python3 python3-venv python3-pip pipx \
