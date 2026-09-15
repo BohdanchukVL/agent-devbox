@@ -13,6 +13,15 @@
 //! when the second half follows in time; the second half is always passed on. Mode changes do not interact with
 //! drawing output, so delaying or dropping a cancelled pair is safe; a lone
 //! change is released unchanged after the hold expires.
+//!
+//! The three mouse tracking modes (1000, 1002, 1003) are one exclusive
+//! setting, not three flags: xterm and tmux treat DECSET of one as replacing
+//! the others, and DECRST of *any* of them as "tracking off". tmux changes
+//! the tracking mode with "reset all four, then set the wanted one", so an
+//! enable of one variant cancels every held reset of the group. Releasing a
+//! stray `1003l` after `1000h 1002h` went through would switch tracking off
+//! in the local tmux, which is what happened when a window with a plain
+//! shell followed one with an any-event-tracking pane (Claude Code, lazygit).
 use std::time::{Duration, Instant};
 
 /// How long the first half of a pair may be held before it is passed on.
@@ -26,6 +35,15 @@ const PAIRS: &[(&[u8], &[u8])] = &[
     (b"\x1b[?1006l", b"\x1b[?1006h"),
     (b"\x1b[?25h", b"\x1b[?25l"),
 ];
+
+/// Pairs acting on one exclusive terminal setting share a group (index into [`PAIRS`]).
+fn group(pair: usize) -> usize {
+    match pair {
+        0..=2 => 0, // mouse tracking: 1000 / 1002 / 1003
+        3 => 1,     // SGR mouse encoding
+        _ => 2,     // cursor visibility
+    }
+}
 
 pub struct FlapFilter {
     /// bytes that are so far a prefix of at least one tracked sequence
@@ -81,9 +99,12 @@ impl FlapFilter {
                     // already on, or hiding an already hidden cursor, is a no-op, while
                     // dropping it would lose the enable whenever the previous state was
                     // off (tmux starts a client with "mouse off" and only then "mouse on").
-                    if let Some(pos) = self.held.iter().position(|(h, _)| *h == i) {
-                        self.held.remove(pos); // the held first half is what we drop
-                    }
+                    // Drop every held first half of the same group, not only the
+                    // matching one: for the tracking modes an enable of any variant
+                    // makes the pending resets moot, and releasing one later would
+                    // turn tracking off again (see the module docs).
+                    let g = group(i);
+                    self.held.retain(|(h, _)| group(*h) != g);
                     out.extend_from_slice(&self.pend);
                     self.pend.clear();
                 }
@@ -319,6 +340,78 @@ mod tests {
         let mut want = b"\x1b[?1049h\x1b[?1005l\x1b[H\x1b[J".to_vec();
         want.extend_from_slice(ON);
         assert_eq!(out, want);
+        assert!(!f.has_pending());
+    }
+
+    /// Mouse tracking a tmux pane (input.c) ends up with after these bytes:
+    /// DECSET of a tracking mode replaces the others, DECRST of any turns
+    /// tracking off. `None` means off.
+    fn tmux_tracking_after(bytes: &[u8]) -> Option<&'static str> {
+        let table: [(&[u8], Option<&'static str>); 6] = [
+            (b"\x1b[?1000h", Some("standard")),
+            (b"\x1b[?1002h", Some("button")),
+            (b"\x1b[?1003h", Some("all")),
+            (b"\x1b[?1000l", None),
+            (b"\x1b[?1002l", None),
+            (b"\x1b[?1003l", None),
+        ];
+        let mut mode = None;
+        let mut i = 0;
+        while i < bytes.len() {
+            match table.iter().find(|(seq, _)| bytes[i..].starts_with(seq)) {
+                Some((seq, m)) => {
+                    mode = *m;
+                    i += seq.len();
+                }
+                None => i += 1,
+            }
+        }
+        mode
+    }
+
+    #[test]
+    fn switch_from_any_event_pane_to_plain_shell_keeps_tracking_on() {
+        // tmux tty_update_mode when the client goes from a window with a
+        // MODE_MOUSE_ALL pane (Claude Code, lazygit) to a window with only a
+        // shell: reset all four, then enable the button subset. The reset of
+        // 1003 has no matching enable and must not be released later.
+        let mut f = FlapFilter::new();
+        let now = Instant::now();
+        let block: &[u8] =
+            b"\x1b[?1006l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006h\x1b[?1000h\x1b[?1002h";
+        let mut out = feed_all(&mut f, &[block], now);
+        assert_eq!(out.as_slice(), &b"\x1b[?1006h\x1b[?1000h\x1b[?1002h"[..]);
+        assert!(!f.has_pending());
+        out.extend(f.expire(now + HOLD + Duration::from_millis(1)));
+        assert_eq!(tmux_tracking_after(&out), Some("button"));
+    }
+
+    #[test]
+    fn switch_from_plain_shell_to_any_event_pane_ends_in_any_event() {
+        let mut f = FlapFilter::new();
+        let now = Instant::now();
+        let block: &[u8] = b"\x1b[?1006l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006h\x1b[?1000h\x1b[?1002h\x1b[?1003h";
+        let mut out = feed_all(&mut f, &[block], now);
+        assert_eq!(
+            out.as_slice(),
+            &b"\x1b[?1006h\x1b[?1000h\x1b[?1002h\x1b[?1003h"[..]
+        );
+        assert!(!f.has_pending());
+        out.extend(f.expire(now + HOLD + Duration::from_millis(1)));
+        assert_eq!(tmux_tracking_after(&out), Some("all"));
+    }
+
+    #[test]
+    fn mouse_off_for_good_is_released_after_hold() {
+        let mut f = FlapFilter::new();
+        let now = Instant::now();
+        let block: &[u8] = b"\x1b[?1006l\x1b[?1000l\x1b[?1002l\x1b[?1003l";
+        let mut out = feed_all(&mut f, &[block], now);
+        assert!(out.is_empty());
+        assert!(f.has_pending());
+        out.extend(f.expire(now + HOLD));
+        assert_eq!(out.as_slice(), block);
+        assert_eq!(tmux_tracking_after(&out), None);
         assert!(!f.has_pending());
     }
 }
