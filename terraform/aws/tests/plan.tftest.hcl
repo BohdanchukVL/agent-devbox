@@ -67,6 +67,41 @@ run "tailscale_no_cidr_closes_ssh" {
   }
 }
 
+run "tailscale_oauth_only_closes_ssh" {
+  command = plan
+
+  variables {
+    tailscale_authkey = ""
+    tailscale_enabled = true
+    ssh_allowed_cidrs = null
+  }
+
+  assert {
+    condition     = length(module.core.ssh_cidrs) == 0
+    error_message = "ssh_cidrs must be empty when tailscale is enabled even without static authkey"
+  }
+
+  assert {
+    condition     = length([for r in aws_security_group.this.ingress : r if r.description == "Tailscale WireGuard"]) > 0
+    error_message = "Tailscale WireGuard ingress rule must be present when tailscale_enabled is true"
+  }
+}
+
+run "tailscale_disabled_opens_ssh" {
+  command = plan
+
+  variables {
+    tailscale_authkey = ""
+    tailscale_enabled = false
+    ssh_allowed_cidrs = null
+  }
+
+  assert {
+    condition     = length(module.core.ssh_cidrs) > 0
+    error_message = "ssh_cidrs must be open when tailscale is disabled and no cidrs specified"
+  }
+}
+
 run "runner_key_included_when_set" {
   command = plan
 

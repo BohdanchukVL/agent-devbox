@@ -72,6 +72,12 @@ variable "tailscale_authkey" {
   sensitive   = true
 }
 
+variable "tailscale_enabled" {
+  description = "Whether Tailscale is enabled for the devbox"
+  type        = bool
+  default     = true
+}
+
 variable "ssh_allowed_cidrs" {
   description = "CIDR blocks allowed to connect to SSH (port 22). If null and tailscale_authkey is set, port 22 is closed from internet."
   type        = list(string)
