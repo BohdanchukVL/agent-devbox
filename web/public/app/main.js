@@ -40,8 +40,14 @@ function initApp() {
   const btnPanes = document.getElementById("btn-panes");
   const toast = document.getElementById("toast");
 
+  let transport = null;
+  let panesManager = null;
+  let composer = null;
+  let statusManager = null;
+  let terminalController = null;
+
   // 1. Status Manager
-  const statusManager = new StatusManager({
+  statusManager = new StatusManager({
     statusDot,
     projectName,
     paneLabel,
@@ -52,53 +58,71 @@ function initApp() {
     sessionName,
     token,
     onToggleControl: (requestMobile) => {
-      if (requestMobile) {
-        transport.requestControl();
-      } else {
-        transport.releaseControl();
+      if (transport) {
+        if (requestMobile) {
+          transport.requestControl();
+        } else {
+          transport.releaseControl();
+        }
       }
     }
   });
 
   // 2. Terminal Controller
-  const terminalController = new TerminalController(document.getElementById("terminal"), {
+  terminalController = new TerminalController(document.getElementById("terminal"), {
     isMobile,
     onData: (data) => {
-      transport.sendRaw(data);
+      if (transport) {
+        transport.sendRaw(data);
+      }
     },
     onResize: (cols, rows) => {
-      transport.sendResize(cols, rows);
+      if (transport) {
+        transport.sendResize(cols, rows);
+      }
     }
   });
   terminalController.init();
 
   // 3. Transport
-  const transport = new Transport({
+  transport = new Transport({
     clientType,
     sessionName,
     token,
     cols: terminalController.cols,
     rows: terminalController.rows,
     onOutput: (data) => {
-      terminalController.write(data);
+      if (terminalController) {
+        terminalController.write(data);
+      }
     },
     onStatusChange: (state) => {
-      statusManager.setConnectionState(state);
+      if (statusManager) {
+        statusManager.setConnectionState(state);
+      }
     },
     onControlChanged: (controller, readonly) => {
-      statusManager.setControlState(controller, readonly);
-      if (controller === "mobile") {
+      if (statusManager) {
+        statusManager.setControlState(controller, readonly);
+      }
+      if (controller === "mobile" && terminalController) {
         terminalController.scheduleFit(50);
       }
     },
     onPanesUpdate: (data) => {
       if (data && data.windows && data.panes) {
-        panesManager.updateData(data.windows, data.panes);
-        statusManager.setPaneInfo(panesManager.getActivePaneLabel());
+        if (panesManager) {
+          panesManager.updateData(data.windows, data.panes);
+          if (statusManager) {
+            statusManager.setPaneInfo(panesManager.getActivePaneLabel());
+          }
+        }
       }
     },
     onError: (msg) => {
-      statusManager.showToast(msg, "error");
+      if (statusManager) {
+        statusManager.showToast(msg, "error");
+      }
     },
     onSessionAssigned: (name) => {
       sessionName = name;
@@ -109,33 +133,45 @@ function initApp() {
   // 4. Viewport Controller
   const viewportController = new ViewportController({
     onResize: ({ height, isKeyboardOpen }) => {
-      terminalController.scheduleFit(60);
+      if (terminalController) {
+        terminalController.scheduleFit(60);
+      }
     }
   });
 
   // 5. Composer
-  const composer = new Composer(composerContainer, {
+  composer = new Composer(composerContainer, {
     currentPaneId: "default",
     onSend: ({ text, withEnter, paneId }) => {
-      if (text) {
-        transport.sendInput(text + (withEnter ? "\r" : ""), paneId);
-      } else if (withEnter) {
-        transport.sendRaw("\r");
+      if (transport) {
+        if (text) {
+          transport.sendInput(text + (withEnter ? "\r" : ""), paneId);
+        } else if (withEnter) {
+          transport.sendRaw("\r");
+        }
       }
     }
   });
 
   // 6. Panes Manager
-  const panesManager = new PanesManager({
+  panesManager = new PanesManager({
     sessionName,
     token,
     onPaneSelected: (pane) => {
-      transport.sendAction("select-pane", pane.id);
-      composer.setPaneId(pane.id);
-      statusManager.setPaneInfo(panesManager.getActivePaneLabel());
+      if (transport) {
+        transport.sendAction("select-pane", pane.id);
+      }
+      if (composer) {
+        composer.setPaneId(pane.id);
+      }
+      if (statusManager) {
+        statusManager.setPaneInfo(panesManager.getActivePaneLabel());
+      }
     },
     onZoomToggled: () => {
-      transport.sendAction("zoom");
+      if (transport) {
+        transport.sendAction("zoom");
+      }
     }
   });
 
@@ -150,10 +186,10 @@ function initApp() {
     sessionName,
     token,
     onToast: (msg, type, duration) => {
-      statusManager.showToast(msg, type, duration);
+      if (statusManager) statusManager.showToast(msg, type, duration);
     },
     onUploadSuccess: (file) => {
-      composer.insertText(file.path + " ");
+      if (composer) composer.insertText(file.path + " ");
     }
   });
 
@@ -173,7 +209,9 @@ function initApp() {
       ctrlSticky = false;
       if (btnCtrl) btnCtrl.classList.remove("active");
     }
-    transport.sendRaw(seq);
+    if (transport) {
+      transport.sendRaw(seq);
+    }
   }
 
   function bindClick(id, handler) {
@@ -188,10 +226,18 @@ function initApp() {
   bindClick("dock-down", () => sendKey("\x1b[B"));
   bindClick("dock-slash", () => sendKey("/"));
   bindClick("dock-break", () => sendKey("\x03")); // Ctrl-C
-  bindClick("dock-zoom", () => transport.sendAction("zoom"));
-  bindClick("dock-composer", () => composer.toggle());
-  bindClick("dock-photo", () => uploadsManager.triggerPhoto());
-  bindClick("dock-file", () => uploadsManager.triggerFile());
+  bindClick("dock-zoom", () => {
+    if (transport) transport.sendAction("zoom");
+  });
+  bindClick("dock-composer", () => {
+    if (composer) composer.toggle();
+  });
+  bindClick("dock-photo", () => {
+    if (uploadsManager) uploadsManager.triggerPhoto();
+  });
+  bindClick("dock-file", () => {
+    if (uploadsManager) uploadsManager.triggerFile();
+  });
 
   if (btnCtrl) {
     btnCtrl.addEventListener("click", () => {
