@@ -7,6 +7,21 @@ import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import { WebSocketServer } from 'ws';
 import pty from 'node-pty';
 import Busboy from 'busboy';
+import {
+  PROTOCOL_VERSION,
+  MSG_HELLO,
+  MSG_INPUT,
+  MSG_RESIZE,
+  MSG_ACTION,
+  MSG_CONTROL,
+  MSG_PANES,
+  MSG_STATUS,
+  MSG_PING,
+  MSG_PONG,
+  MSG_ERROR,
+  MSG_ACK,
+  parseMessage
+} from './public/app/protocol.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -106,6 +121,113 @@ function getPaneId(sessionName) {
 
 function isDaResponse(str) {
   return typeof str === 'string' && (str.startsWith('\x1b[>') || str.startsWith('\x1b[?')) && str.endsWith('c');
+}
+
+function getPanesInfo(sessionName) {
+  sessionName = sanitizeSessionName(sessionName);
+  try {
+    const winOutput = execFileSync('tmux', [
+      'list-windows', '-t', sessionName,
+      '-F', '#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{window_panes}\t#{window_zoomed_flag}'
+    ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+
+    const windows = winOutput ? winOutput.split('\n').filter(Boolean).map(line => {
+      const parts = line.split('\t');
+      return {
+        id: parts[0] || '',
+        index: parseInt(parts[1], 10) || 1,
+        name: parts[2] || '',
+        active: parts[3] === '1',
+        panesCount: parseInt(parts[4], 10) || 1,
+        zoomed: parts[5] === '1'
+      };
+    }) : [];
+
+    const paneOutput = execFileSync('tmux', [
+      'list-panes', '-s', '-t', sessionName,
+      '-F', '#{window_id}\t#{pane_id}\t#{pane_index}\t#{pane_title}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_active}'
+    ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+
+    const panes = paneOutput ? paneOutput.split('\n').filter(Boolean).map(line => {
+      const parts = line.split('\t');
+      return {
+        windowId: parts[0] || '',
+        id: parts[1] || '',
+        index: parseInt(parts[2], 10) || 1,
+        title: parts[3] || '',
+        command: parts[4] || '',
+        path: parts[5] || '',
+        active: parts[6] === '1'
+      };
+    }) : [];
+
+    return { ok: true, session: sessionName, windows, panes };
+  } catch (err) {
+    return { ok: false, error: err.message, session: sessionName, windows: [], panes: [] };
+  }
+}
+
+class SessionCoordinator {
+  constructor(sessionName) {
+    this.sessionName = sessionName;
+    this.clients = new Set();
+    this.controller = 'desktop';
+  }
+
+  addClient(client) {
+    this.clients.add(client);
+    this.recompute();
+  }
+
+  removeClient(client) {
+    this.clients.delete(client);
+    this.recompute();
+  }
+
+  recompute() {
+    const hasDesktop = Array.from(this.clients).some(c => c.clientType === 'desktop');
+    const hasMobile = Array.from(this.clients).some(c => c.clientType === 'mobile');
+
+    if (!hasMobile) {
+      this.controller = 'desktop';
+    } else if (!hasDesktop) {
+      this.controller = 'mobile';
+    }
+    for (const c of this.clients) {
+      c.isController = (c.clientType === this.controller);
+      c.readonly = !c.isController;
+    }
+  }
+
+  setController(newController) {
+    this.controller = newController;
+    for (const c of this.clients) {
+      c.isController = (c.clientType === this.controller);
+      c.readonly = !c.isController;
+    }
+    this.broadcastControl();
+  }
+
+  broadcastControl() {
+    const msg = JSON.stringify({
+      type: 'control',
+      controller: this.controller,
+      session: this.sessionName
+    });
+    for (const c of this.clients) {
+      if (c.ws && c.ws.readyState === c.ws.OPEN) {
+        c.ws.send(msg);
+      }
+    }
+  }
+}
+
+const sessionCoordinators = new Map();
+function getCoordinator(sessionName) {
+  if (!sessionCoordinators.has(sessionName)) {
+    sessionCoordinators.set(sessionName, new SessionCoordinator(sessionName));
+  }
+  return sessionCoordinators.get(sessionName);
 }
 
 function isTrustedProxyReq(req) {
@@ -612,6 +734,18 @@ async function handleRequest(req, res) {
           spawnSync('tmux', ['next-window', '-t', session]);
         } else if (data.action === 'prev-window') {
           spawnSync('tmux', ['previous-window', '-t', session]);
+        } else if (data.action === 'select-pane' && data.target) {
+          const targetPane = String(data.target).replace(/[^a-zA-Z0-9_%-]/g, '');
+          spawnSync('tmux', ['select-pane', '-t', targetPane]);
+        } else if (data.action === 'select-window' && data.target) {
+          const targetWin = String(data.target).replace(/[^a-zA-Z0-9_%-]/g, '');
+          spawnSync('tmux', ['select-window', '-t', targetWin]);
+        } else if (data.action === 'take-control') {
+          const coordinator = getCoordinator(session);
+          coordinator.setController(data.client === 'mobile' ? 'mobile' : 'desktop');
+        } else if (data.action === 'release-control') {
+          const coordinator = getCoordinator(session);
+          coordinator.setController('desktop');
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
@@ -623,17 +757,27 @@ async function handleRequest(req, res) {
     return;
   }
 
+  if (req.method === 'GET' && pathname === '/api/panes') {
+    const session = sanitizeSessionName(url.searchParams.get('session') || 'main');
+    const info = getPanesInfo(session);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(info));
+    return;
+  }
+
   if (req.method === 'GET' && pathname === '/api/status') {
     const session = sanitizeSessionName(url.searchParams.get('session') || 'main');
     let cwd = '';
     try {
       cwd = getPaneCwd(session);
     } catch {}
+    const coordinator = getCoordinator(session);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       ok: true,
       session,
       cwd,
+      controller: coordinator.controller,
       node: process.version,
       auth: AUTH_MODE,
       user: identity ? identity.login : null
@@ -654,7 +798,8 @@ async function handleRequest(req, res) {
   } else if (pathname.startsWith('/vendor/addon-webgl/')) {
     targetPath = path.join(NODE_MODULES, '@xterm', 'addon-webgl', pathname.replace('/vendor/addon-webgl/', ''));
   } else {
-    targetPath = path.join(PUBLIC_DIR, pathname);
+    const safePath = path.normalize(pathname).replace(/^(\.\.[\/\\])+/, '');
+    targetPath = path.join(PUBLIC_DIR, safePath);
   }
 
   if (fs.existsSync(targetPath) && fs.statSync(targetPath).isFile()) {
@@ -678,7 +823,20 @@ function requestListener(req, res) {
 
 // ── WebSocket ─────────────────────────────────────────────────────────────────
 
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({
+  noServer: true,
+  handleProtocols: (protocols) => {
+    if (protocols) {
+      if (typeof protocols.has === 'function' && protocols.has('devbox-terminal.v2')) {
+        return 'devbox-terminal.v2';
+      }
+      if (Array.isArray(protocols) && protocols.includes('devbox-terminal.v2')) {
+        return 'devbox-terminal.v2';
+      }
+    }
+    return false;
+  }
+});
 
 function rejectUpgrade(socket, code, reason) {
   try {
@@ -774,8 +932,6 @@ wss.on('connection', (ws, req) => {
 
   console.log(`[ws] client connected (${clientType})${who} -> session "${sessionName}" [${cols}x${rows}]`);
 
-  ws.send(JSON.stringify({ type: 'session', session: sessionName }));
-
   const term = pty.spawn('tmux', ['attach-session', '-t', sessionName], {
     name: 'xterm-256color',
     cols: Math.max(cols, 20),
@@ -788,6 +944,26 @@ wss.on('connection', (ws, req) => {
     }
   });
 
+  const clientState = {
+    ws,
+    clientType,
+    sessionName,
+    term,
+    isController: false,
+    readonly: false
+  };
+
+  const coordinator = getCoordinator(sessionName);
+  coordinator.addClient(clientState);
+
+  ws.send(JSON.stringify({
+    type: 'session',
+    session: sessionName,
+    controller: coordinator.controller,
+    readonly: clientState.readonly,
+    protocol: PROTOCOL_VERSION
+  }));
+
   term.onData(data => {
     if (ws.readyState === ws.OPEN) {
       ws.send(data);
@@ -795,26 +971,90 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('message', message => {
-    const str = message.toString();
-    if (str.startsWith('{')) {
-      try {
-        const parsed = JSON.parse(str);
-        if (parsed.type === 'resize' && parsed.cols && parsed.rows) {
-          const c = Math.max(parseInt(parsed.cols, 10) || 20, 10);
-          const r = Math.max(parseInt(parsed.rows, 10) || 10, 5);
-          term.resize(c, r);
-          return;
+    const raw = message.toString();
+    const parsed = parseMessage(raw);
+
+    if (parsed.isControl) {
+      if (parsed.message) {
+        const msg = parsed.message;
+        try {
+          if (msg.type === MSG_HELLO) {
+            ws.send(JSON.stringify({
+              type: MSG_HELLO,
+              session: sessionName,
+              paneId: getPaneId(sessionName),
+              controller: coordinator.controller,
+              readonly: clientState.readonly,
+              cols: term.cols,
+              rows: term.rows,
+              protocol: PROTOCOL_VERSION
+            }));
+          } else if (msg.type === MSG_RESIZE) {
+            if (clientState.readonly) {
+              // Observer mode: do NOT alter shared terminal geometry!
+              return;
+            }
+            const c = Math.max(parseInt(msg.cols, 10) || 20, 10);
+            const r = Math.max(parseInt(msg.rows, 10) || 10, 5);
+            term.resize(c, r);
+          } else if (msg.type === MSG_INPUT) {
+            if (clientState.readonly) {
+              ws.send(JSON.stringify({
+                type: MSG_ERROR,
+                message: 'Режим перегляду: увімкніть керування для введення'
+              }));
+              return;
+            }
+            if (typeof msg.data === 'string') {
+              term.write(msg.data);
+              if (msg.opId) {
+                ws.send(JSON.stringify({ type: MSG_ACK, opId: msg.opId }));
+              }
+            }
+          } else if (msg.type === MSG_CONTROL) {
+            if (msg.action === 'request') {
+              coordinator.setController(clientState.clientType);
+            } else if (msg.action === 'release') {
+              coordinator.setController('desktop');
+            }
+          } else if (msg.type === MSG_ACTION) {
+            if (msg.action === 'zoom') {
+              spawnSync('tmux', ['resize-pane', '-Z', '-t', sessionName]);
+            } else if (msg.action === 'select-pane' && msg.target) {
+              const targetPane = String(msg.target).replace(/[^a-zA-Z0-9_%-]/g, '');
+              spawnSync('tmux', ['select-pane', '-t', targetPane]);
+            } else if (msg.action === 'select-window' && msg.target) {
+              const targetWin = String(msg.target).replace(/[^a-zA-Z0-9_%-]/g, '');
+              spawnSync('tmux', ['select-window', '-t', targetWin]);
+            }
+            ws.send(JSON.stringify({
+              type: MSG_PANES,
+              data: getPanesInfo(sessionName)
+            }));
+          } else if (msg.type === MSG_PING) {
+            ws.send(JSON.stringify({ type: MSG_PONG, t: Date.now() }));
+          }
+        } catch (err) {
+          console.warn('[ws] control message error:', err.message);
+          ws.send(JSON.stringify({ type: MSG_ERROR, message: err.message }));
         }
-      } catch {}
+      } else {
+        console.warn('[ws] dropped invalid control frame');
+      }
+      return; // CRITICAL: NEVER write control frames to stdin!
     }
 
     // Filter out client Device Attributes responses (\x1b[>0;276;0c, \x1b[?1;2c, etc.)
-    // to prevent them from leaking into the shell / Claude Code prompt.
-    if (isDaResponse(str)) {
+    if (isDaResponse(raw)) {
       return;
     }
 
-    term.write(str);
+    // Direct text / keystrokes: only allow if not in readonly observer mode
+    if (clientState.readonly) {
+      return;
+    }
+
+    term.write(raw);
   });
 
   ws.on('close', () => {
@@ -822,6 +1062,10 @@ wss.on('connection', (ws, req) => {
     try {
       term.kill();
     } catch {}
+    coordinator.removeClient(clientState);
+    if (coordinator.clients.size === 0) {
+      sessionCoordinators.delete(sessionName);
+    }
     const remaining = (activeSessionClients.get(sessionName) || 1) - 1;
     if (remaining <= 0) {
       activeSessionClients.delete(sessionName);
@@ -895,7 +1139,11 @@ export {
   resolveIdentity,
   identityAllowed,
   authorize,
-  isDaResponse
+  isDaResponse,
+  getPanesInfo,
+  SessionCoordinator,
+  sessionCoordinators,
+  getCoordinator
 };
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
