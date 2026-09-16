@@ -70,14 +70,15 @@ function initApp() {
       transport.sendResize(cols, rows);
     }
   });
+  terminalController.init();
 
   // 3. Transport
   const transport = new Transport({
     clientType,
     sessionName,
     token,
-    cols: 80,
-    rows: 24,
+    cols: terminalController.cols,
+    rows: terminalController.rows,
     onOutput: (data) => {
       terminalController.write(data);
     },
@@ -231,7 +232,6 @@ function initApp() {
   });
 
   // Start
-  terminalController.init();
   transport.connect();
 }
 

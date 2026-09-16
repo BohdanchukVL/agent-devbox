@@ -197,11 +197,36 @@ header.app-header {
 #terminal {
   width: 100%;
   height: 100%;
+  margin: 0;
+  padding: 0;
   touch-action: none;
   overscroll-behavior: none;
+  display: flex;
+  justify-content: center;
+}
+
+.xterm {
+  padding: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.xterm-screen {
+  margin: 0 auto;
 }
 
 .xterm, .xterm-screen, .xterm-viewport {
   touch-action: none !important;
   overscroll-behavior: none !important;
+}
+
+.xterm-viewport {
+  scrollbar-width: none !important;
+  overflow-y: hidden !important;
+}
+
+.xterm-viewport::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
 }

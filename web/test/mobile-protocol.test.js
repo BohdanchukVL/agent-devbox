@@ -14,7 +14,7 @@ import {
   createAction,
   createControl
 } from '../public/app/protocol.js';
-import { SessionCoordinator, isMouseWheel } from '../server.js';
+import { SessionCoordinator, isMouseWheel, isGarbageResponse } from '../server.js';
 
 test('protocol.js: parseMessage separates control frames and raw input', () => {
   // 1. Valid control frames
@@ -100,4 +100,17 @@ test('isMouseWheel detects SGR mouse wheel sequences', () => {
   assert.equal(isMouseWheel('\x1b[<0;20;10M'), false);
   assert.equal(isMouseWheel('ls -la\r'), false);
   assert.equal(isMouseWheel('\x1b[A'), false);
+});
+
+test('isGarbageResponse identifies probe responses and does not block user input', () => {
+  assert.equal(isGarbageResponse('\x1b[>0;276;0c'), true);
+  assert.equal(isGarbageResponse('0;276;0c'), true);
+  assert.equal(isGarbageResponse('\x1b[?1;2c'), true);
+  assert.equal(isGarbageResponse('\x1b[c'), true);
+  assert.equal(isGarbageResponse('\x1b[0n'), true);
+  assert.equal(isGarbageResponse('\x1b[35;12R'), true);
+  assert.equal(isGarbageResponse('\x1b]11;rgb:0000/0000/0000\x07'), true);
+  assert.equal(isGarbageResponse('echo hello'), false);
+  assert.equal(isGarbageResponse('\x1b[A'), false); // Up arrow
+  assert.equal(isGarbageResponse('\x1b[<64;10;10M'), false); // Mouse wheel
 });

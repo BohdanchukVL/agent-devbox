@@ -127,6 +127,28 @@ function isMouseWheel(str) {
   return typeof str === 'string' && /^(\x1b\[<6[45];\d+;\d+[Mm])+$/.test(str);
 }
 
+function isGarbageResponse(raw) {
+  if (typeof raw !== 'string') return false;
+  if (isMouseWheel(raw)) return false;
+  if (raw === '\x1b[0n' || raw === '0n') return true;
+  if (/^\x1b\[[>?=]?[\d;]*c/.test(raw) || /^0;276;0c/.test(raw)) return true;
+  if (/^\x1b\[\d+(;\d+)?R/.test(raw)) return true;
+  if (/^\x1b\](10|11|12|4);/.test(raw)) return true;
+  return false;
+}
+
+function isWindowZoomed(sessionName) {
+  try {
+    const out = execFileSync('tmux', ['display-message', '-p', '-t', sanitizeSessionName(sessionName), '#{window_zoomed_flag}'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    }).trim();
+    return out === '1';
+  } catch {
+    return false;
+  }
+}
+
 function getPanesInfo(sessionName) {
   sessionName = sanitizeSessionName(sessionName);
   try {
@@ -740,10 +762,18 @@ async function handleRequest(req, res) {
           spawnSync('tmux', ['previous-window', '-t', session]);
         } else if (data.action === 'select-pane' && data.target) {
           const targetPane = String(data.target).replace(/[^a-zA-Z0-9_%-]/g, '');
+          const wasZoomed = isWindowZoomed(session) || data.client === 'mobile';
           spawnSync('tmux', ['select-pane', '-t', targetPane]);
+          if (wasZoomed) {
+            spawnSync('tmux', ['resize-pane', '-Z', '-t', targetPane]);
+          }
         } else if (data.action === 'select-window' && data.target) {
           const targetWin = String(data.target).replace(/[^a-zA-Z0-9_%-]/g, '');
+          const wasZoomed = isWindowZoomed(session) || data.client === 'mobile';
           spawnSync('tmux', ['select-window', '-t', targetWin]);
+          if (wasZoomed) {
+            spawnSync('tmux', ['resize-pane', '-Z', '-t', session]);
+          }
         } else if (data.action === 'take-control') {
           const coordinator = getCoordinator(session);
           coordinator.setController(data.client === 'mobile' ? 'mobile' : 'desktop');
@@ -1026,10 +1056,18 @@ wss.on('connection', (ws, req) => {
               spawnSync('tmux', ['resize-pane', '-Z', '-t', sessionName]);
             } else if (msg.action === 'select-pane' && msg.target) {
               const targetPane = String(msg.target).replace(/[^a-zA-Z0-9_%-]/g, '');
+              const wasZoomed = isWindowZoomed(sessionName) || clientState.clientType === 'mobile';
               spawnSync('tmux', ['select-pane', '-t', targetPane]);
+              if (wasZoomed) {
+                spawnSync('tmux', ['resize-pane', '-Z', '-t', targetPane]);
+              }
             } else if (msg.action === 'select-window' && msg.target) {
               const targetWin = String(msg.target).replace(/[^a-zA-Z0-9_%-]/g, '');
+              const wasZoomed = isWindowZoomed(sessionName) || clientState.clientType === 'mobile';
               spawnSync('tmux', ['select-window', '-t', targetWin]);
+              if (wasZoomed) {
+                spawnSync('tmux', ['resize-pane', '-Z', '-t', sessionName]);
+              }
             }
             ws.send(JSON.stringify({
               type: MSG_PANES,
@@ -1048,20 +1086,28 @@ wss.on('connection', (ws, req) => {
       return; // CRITICAL: NEVER write control frames to stdin!
     }
 
-    // Filter out client Device Attributes responses (\x1b[>0;276;0c, \x1b[?1;2c, etc.)
-    if (isDaResponse(raw)) {
+    // Filter out client Device Attributes and probe responses
+    if (isGarbageResponse(raw)) {
+      return;
+    }
+
+    const cleanRaw = raw.replace(/\x1b\[[>?=]?[\d;]+c/g, '')
+                        .replace(/0;276;0c/g, '')
+                        .replace(/\x1b\[\d+(;\d+)?R/g, '')
+                        .replace(/\x1b\[0n/g, '');
+    if (!cleanRaw) {
       return;
     }
 
     // Direct text / keystrokes: only allow if not in readonly observer mode,
     // but allow mouse wheel scrolling so observers can navigate history cleanly.
     if (clientState.readonly) {
-      if (!isMouseWheel(raw)) {
+      if (!isMouseWheel(cleanRaw)) {
         return;
       }
     }
 
-    term.write(raw);
+    term.write(cleanRaw);
   });
 
   ws.on('close', () => {
@@ -1148,6 +1194,8 @@ export {
   authorize,
   isDaResponse,
   isMouseWheel,
+  isGarbageResponse,
+  isWindowZoomed,
   getPanesInfo,
   SessionCoordinator,
   sessionCoordinators,

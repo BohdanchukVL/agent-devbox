@@ -24,7 +24,8 @@ export class TerminalController {
     this.term = new Terminal({
       cursorBlink: true,
       fontSize: this.fontSize,
-      fontFamily: "ui-monospace, \"SF Mono\", Menlo, Monaco, \"Cascadia Code\", monospace",
+      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, \"Roboto Mono\", \"Noto Sans Mono\", monospace",
+      scrollback: this.isMobile ? 0 : 1000,
       theme: {
         background: "#121212",
         foreground: "#d4d4d4",
@@ -70,15 +71,40 @@ export class TerminalController {
     this.fit();
     this.initTouchScrolling();
 
-    // Swallow Device Attributes queries so xterm.js doesn't emit responses (e.g. \x1b[>0;276;0c) into stdin
-    if (this.term.parser && this.term.parser.registerCsiHandler) {
-      this.term.parser.registerCsiHandler({ prefix: ">", final: "c" }, () => true);
-      this.term.parser.registerCsiHandler({ final: "c" }, () => true);
+    // Comprehensively swallow all Device Attributes, Status, and Color queries
+    if (this.term.parser) {
+      if (this.term.parser.registerCsiHandler) {
+        this.term.parser.registerCsiHandler({ final: "c" }, () => true);
+        this.term.parser.registerCsiHandler({ prefix: ">", final: "c" }, () => true);
+        this.term.parser.registerCsiHandler({ prefix: "?", final: "c" }, () => true);
+        this.term.parser.registerCsiHandler({ prefix: "=", final: "c" }, () => true);
+        this.term.parser.registerCsiHandler({ final: "n" }, () => true);
+        this.term.parser.registerCsiHandler({ prefix: "?", final: "n" }, () => true);
+        this.term.parser.registerCsiHandler({ prefix: "?", final: "p" }, () => true);
+        this.term.parser.registerCsiHandler({ prefix: "$", final: "p" }, () => true);
+        this.term.parser.registerCsiHandler({ final: "t" }, () => true);
+      }
+      if (this.term.parser.registerOscHandler) {
+        this.term.parser.registerOscHandler(4, () => true);
+        this.term.parser.registerOscHandler(10, () => true);
+        this.term.parser.registerOscHandler(11, () => true);
+        this.term.parser.registerOscHandler(12, () => true);
+      }
     }
 
     this.term.onData(data => {
+      if (this.isDeviceResponse(data)) return;
       this.onData(data);
     });
+  }
+
+  isDeviceResponse(data) {
+    if (typeof data !== "string") return false;
+    if (data === "\x1b[0n" || data === "0n") return true;
+    if (/^\x1b\[[>?=]?[\d;]*c/.test(data) || /^0;276;0c/.test(data)) return true;
+    if (/^\x1b\[\d+(;\d+)?R/.test(data)) return true;
+    if (/^\x1b\](10|11|12|4);/.test(data)) return true;
+    return false;
   }
 
   initTouchScrolling() {
@@ -179,10 +205,28 @@ export class TerminalController {
   }
 
   fit() {
-    if (!this.fitAddon || !this.container) return;
+    if (!this.container || !this.term) return;
     try {
-      this.fitAddon.fit();
-      if (this.term) {
+      const core = this.term._core;
+      if (core && core._renderService && core._renderService.dimensions) {
+        const cellWidth = core._renderService.dimensions.css.cell.width;
+        const cellHeight = core._renderService.dimensions.css.cell.height;
+        if (cellWidth > 0 && cellHeight > 0) {
+          const containerWidth = this.container.clientWidth;
+          const containerHeight = this.container.clientHeight;
+          if (containerWidth > 0 && containerHeight > 0) {
+            const maxCols = Math.max(20, Math.floor(containerWidth / cellWidth));
+            const maxRows = Math.max(10, Math.floor(containerHeight / cellHeight));
+            if (this.term.cols !== maxCols || this.term.rows !== maxRows) {
+              this.term.resize(maxCols, maxRows);
+            }
+            this.onResize(this.term.cols, this.term.rows);
+            return;
+          }
+        }
+      }
+      if (this.fitAddon) {
+        this.fitAddon.fit();
         this.onResize(this.term.cols, this.term.rows);
       }
     } catch {}
