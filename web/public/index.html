@@ -373,6 +373,18 @@
       term.open(termContainer);
       fitAddon.fit();
 
+      // Swallow Device Attributes queries so xterm.js doesn't emit responses (e.g. \x1b[>0;276;0c) into stdin
+      if (term.parser && term.parser.registerCsiHandler) {
+        term.parser.registerCsiHandler({ prefix: '>', final: 'c' }, () => true);
+        term.parser.registerCsiHandler({ final: 'c' }, () => true);
+      }
+
+      term.onData(data => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(data);
+        }
+      });
+
       connectWs();
 
       let resizeTimer = null;
@@ -429,12 +441,6 @@
       ws.onerror = () => {
         ws.close();
       };
-
-      term.onData(data => {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(data);
-        }
-      });
     }
 
     // ── File upload logic ──────────────────────────────────────────────────
