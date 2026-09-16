@@ -123,6 +123,9 @@ function initApp() {
       if (statusManager) {
         statusManager.showToast(msg, "error");
       }
+      if (composer) {
+        composer.restoreLastDraft();
+      }
     },
     onSessionAssigned: (name) => {
       sessionName = name;
@@ -145,7 +148,12 @@ function initApp() {
     onSend: ({ text, withEnter, paneId }) => {
       if (transport) {
         if (text) {
-          transport.sendInput(text + (withEnter ? "\r" : ""), paneId);
+          // Use bracketed paste mode (\x1b[200~ ... \x1b[201~) for multiline text
+          // to prevent internal newlines from executing prematurely as Enter keys.
+          const formattedText = text.includes('\n')
+            ? `\x1b[200~${text}\x1b[201~${withEnter ? '\r' : ''}`
+            : (text + (withEnter ? '\r' : ''));
+          transport.sendInput(formattedText, paneId);
         } else if (withEnter) {
           transport.sendRaw("\r");
         }

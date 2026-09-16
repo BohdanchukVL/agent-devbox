@@ -127,13 +127,19 @@ if command -v claude >/dev/null 2>&1 || [ -x "$PREFIX/bin/claude" ]; then
 fi
 
 # Setup guidelines for agents (user-level only to prevent prompt duplication and avoid polluting workspace)
-install -d -o "$U" -g "$U" "$H/.claude" "$H/.gemini/config"
+install -d -o "$U" -g "$U" "$H/.claude" "$H/.gemini/config" "$H/.codex"
+GUIDELINE_SRC=""
 if [ -f "/opt/devbox/CLAUDE.md" ]; then
-  install -m 0644 -o "$U" -g "$U" /opt/devbox/CLAUDE.md "$H/.claude/CLAUDE.md"
-  install -m 0644 -o "$U" -g "$U" /opt/devbox/CLAUDE.md "$H/.gemini/config/AGENTS.md"
+  GUIDELINE_SRC="/opt/devbox/CLAUDE.md"
 elif [ -f "/opt/devbox/provisioning/CLAUDE.md" ]; then
-  install -m 0644 -o "$U" -g "$U" /opt/devbox/provisioning/CLAUDE.md "$H/.claude/CLAUDE.md"
-  install -m 0644 -o "$U" -g "$U" /opt/devbox/provisioning/CLAUDE.md "$H/.gemini/config/AGENTS.md"
+  GUIDELINE_SRC="/opt/devbox/provisioning/CLAUDE.md"
+fi
+
+if [ -n "$GUIDELINE_SRC" ]; then
+  install -m 0644 -o "$U" -g "$U" "$GUIDELINE_SRC" "$H/.claude/CLAUDE.md"
+  install -m 0644 -o "$U" -g "$U" "$GUIDELINE_SRC" "$H/.gemini/config/AGENTS.md"
+  install -m 0644 -o "$U" -g "$U" "$GUIDELINE_SRC" "$H/.codex/AGENTS.md"
+  install -m 0644 -o "$U" -g "$U" "$GUIDELINE_SRC" "$H/AGENTS.md"
 fi
 
 # Configure Claude Code statusLine hook (provisioning/claude-statusline.sh): it
@@ -185,17 +191,74 @@ chown "$U:$U" "$SETTINGS_FILE"
 chmod 0600 "$SETTINGS_FILE"
 rm -f /tmp/.claude-status.json 2>/dev/null || true
 
-# Codex sandbox config (WP-3B: workspace-write sandbox mode)
+# Codex sandbox & MCP config (WP-3B: workspace-write sandbox mode + MCP parity)
 install -d -o "$U" -g "$U" "$H/.codex"
-cat > "$H/.codex/config.toml" <<'TOML'
-# Codex configuration for agent-devbox
-sandbox_mode = "workspace-write"
-approval_policy = "on-request"
+python3 -c "
+import os
+
+config_path = '$H/.codex/config.toml'
+home_dir = '$H'
+
+base_config = f'''# Codex configuration for agent-devbox
+sandbox_mode = \"workspace-write\"
+approval_policy = \"on-request\"
 
 [sandbox_workspace_write]
-writable_roots = ["/workspace"]
+writable_roots = [\"/workspace\"]
 network_access = true
-TOML
+
+[mcp_servers.ast-grep]
+command = \"ast-grep-mcp\"
+
+[mcp_servers.code-intel]
+command = \"node\"
+args = [\"{home_dir}/.devbox/mcp/code-intel/index.js\"]
+
+[mcp_servers.memory]
+command = \"{home_dir}/.devbox/bin/devbox-memory\"
+
+[mcp_servers.playwright]
+command = \"playwright-mcp\"
+args = [\"--headless\"]
+
+[mcp_servers.db]
+command = \"node\"
+args = [\"{home_dir}/.devbox/mcp/db/index.js\"]
+'''
+
+mcp_servers_block = f'''
+[mcp_servers.ast-grep]
+command = \"ast-grep-mcp\"
+
+[mcp_servers.code-intel]
+command = \"node\"
+args = [\"{home_dir}/.devbox/mcp/code-intel/index.js\"]
+
+[mcp_servers.memory]
+command = \"{home_dir}/.devbox/bin/devbox-memory\"
+
+[mcp_servers.playwright]
+command = \"playwright-mcp\"
+args = [\"--headless\"]
+
+[mcp_servers.db]
+command = \"node\"
+args = [\"{home_dir}/.devbox/mcp/db/index.js\"]
+'''
+
+if not os.path.exists(config_path):
+    with open(config_path, 'w') as f:
+        f.write(base_config)
+else:
+    with open(config_path, 'r') as f:
+        content = f.read()
+    if 'sandbox_mode' not in content:
+        content = 'sandbox_mode = \"workspace-write\"\napproval_policy = \"on-request\"\n\n' + content
+    if '[mcp_servers' not in content:
+        content += '\n' + mcp_servers_block
+    with open(config_path, 'w') as f:
+        f.write(content)
+"
 chown "$U:$U" "$H/.codex/config.toml"
 chmod 0600 "$H/.codex/config.toml"
 

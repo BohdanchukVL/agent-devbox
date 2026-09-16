@@ -18,3 +18,13 @@
 
 ## Web & UI Testing
 - **Closed Loop Verification**: When building web applications or APIs, use `playwright:browser_navigate` and `playwright:browser_snapshot` (accessibility tree) to verify pages, click buttons, and inspect console errors autonomously before asking for human review.
+
+## Verification & Proof of Results
+- **Evidence-Based Completion**: Never report a task as complete without verifiable evidence. Always run the appropriate test, build, or lint commands (e.g. `npm test`, `cargo test`, `go test`, `pytest`) and report the exact command, exit status, and relevant output snippet.
+- **Stale State Awareness**: Any code edit invalidates previous test runs. Re-verify the current code state before asking for human review.
+- **Guard Invariants**: Do not touch generated files, lockfiles without cause, or credentials (`~/.ssh`, `~/.aws`, `~/.config/gh`).
+
+## Task Checkpoints & Handoffs
+- **Handoff Summary**: When concluding a session or handing off work between agents, run `devbox-handoff` to generate a structured snapshot of git status, diff stats, and recent commits.
+- **Next Safe Action**: Clearly list what was tested, what remains unverified, and what the next safe action should be.
+

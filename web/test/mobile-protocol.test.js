@@ -49,6 +49,17 @@ test('protocol.js: parseMessage separates control frames and raw input', () => {
   const p5 = parseMessage(new Uint8Array([1, 2, 3]));
   assert.equal(p5.isControl, false);
   assert.equal(p5.isBinary, true);
+
+  // 5. Raw input with { or regular JSON does not get dropped as invalid control
+  const rawBrace = '{';
+  const p6 = parseMessage(rawBrace);
+  assert.equal(p6.isControl, false);
+  assert.equal(p6.raw, '{');
+
+  const regularJson = '{"key": "value"}';
+  const p7 = parseMessage(regularJson);
+  assert.equal(p7.isControl, false);
+  assert.equal(p7.raw, '{"key": "value"}');
 });
 
 test('SessionCoordinator: ownership and observer mode', () => {

@@ -88,6 +88,8 @@ export class Transport {
       this.ws = new WebSocket(wsUrl);
     }
 
+    this.ws.binaryType = "arraybuffer";
+
     this.ws.onopen = () => {
       this.reconnectAttempts = 0;
       this.setState(STATE_LIVE);
@@ -113,6 +115,11 @@ export class Transport {
   }
 
   handleMessage(data) {
+    if (data instanceof ArrayBuffer) {
+      this.onOutput(new Uint8Array(data));
+      return;
+    }
+
     const parsed = parseMessage(data);
 
     if (parsed.isControl && parsed.message) {
@@ -218,7 +225,17 @@ export class Transport {
 
   sendRaw(data) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(data);
+      if (typeof data === 'string') {
+        this.ws.send(new TextEncoder().encode(data));
+      } else {
+        this.ws.send(data);
+      }
+    }
+  }
+
+  onAck(opId) {
+    if (this.onAckCallback) {
+      this.onAckCallback(opId);
     }
   }
 

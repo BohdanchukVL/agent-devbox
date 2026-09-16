@@ -65,18 +65,20 @@ export function parseMessage(data) {
   }
 
   const trimmed = data.trim();
-  if (trimmed.startsWith('{')) {
-    if (trimmed.endsWith('}')) {
-      try {
-        const parsed = JSON.parse(trimmed);
-        if (parsed && typeof parsed.type === 'string') {
-          return { isControl: true, message: parsed, raw: data, isBinary: false };
-        }
-      } catch {}
-    }
-    // If it started with { but failed parsing or has no type, it is considered an invalid control frame
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed.type === 'string') {
+        return { isControl: true, message: parsed, raw: data, isBinary: false };
+      }
+    } catch {}
+  }
+
+  // If it starts with an explicit control frame pattern, treat malformed frame as invalid control
+  if (trimmed.startsWith('{"type":') || trimmed.startsWith('{"action":')) {
     return { isControl: true, message: null, isInvalidControl: true, raw: data, isBinary: false };
   }
 
   return { isControl: false, message: null, raw: data, isBinary: false };
 }
+

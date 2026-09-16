@@ -164,7 +164,57 @@ if [ "${INSTALL_CLAUDE:-true}" = "true" ]; then
   fi
 fi
 
-# 4c. ccusage session tracker verification (when Claude or Codex enabled)
+# 4c. Codex configuration & MCP parity verification
+if [ "${INSTALL_CODEX:-true}" = "true" ]; then
+  CODEX_CONFIG="$HOME_DIR/.codex/config.toml"
+  if [ -f "$CODEX_CONFIG" ]; then
+    if grep -q 'sandbox_mode = "workspace-write"' "$CODEX_CONFIG" 2>/dev/null; then
+      ok "Codex sandbox configuration verified (workspace-write mode)"
+    else
+      warn "Codex config missing sandbox_mode = \"workspace-write\""
+    fi
+    if grep -q '\[mcp_servers' "$CODEX_CONFIG" 2>/dev/null; then
+      ok "Codex MCP servers configured for agent parity"
+    else
+      warn "Codex config missing [mcp_servers] configuration"
+    fi
+  else
+    warn "Codex config missing at $CODEX_CONFIG"
+  fi
+fi
+
+# 4d. Agent instruction files verification
+if [ -f "$HOME_DIR/.claude/CLAUDE.md" ]; then
+  ok "Claude global guidelines verified ($HOME_DIR/.claude/CLAUDE.md)"
+else
+  warn "Claude global guidelines missing ($HOME_DIR/.claude/CLAUDE.md)"
+fi
+if [ -f "$HOME_DIR/.codex/AGENTS.md" ]; then
+  ok "Codex global guidelines verified ($HOME_DIR/.codex/AGENTS.md)"
+else
+  warn "Codex global guidelines missing ($HOME_DIR/.codex/AGENTS.md)"
+fi
+
+# 4e. Language Servers (LSP) verification
+for lsp in typescript-language-server pyright rust-analyzer; do
+  if command -v "$lsp" >/dev/null 2>&1; then
+    ok "LSP available: $lsp ($(command -v "$lsp"))"
+  else
+    warn "LSP not found: $lsp"
+  fi
+done
+if command -v gopls >/dev/null 2>&1; then
+  ok "LSP available: gopls ($(command -v gopls))"
+fi
+
+# 4f. UTF-8 & tmux diversion verification
+if dpkg-divert --list | grep -q '/usr/bin/tmux'; then
+  ok "tmux binary diversion verified (UTF-8 bulletproof wrapper active)"
+else
+  warn "tmux binary diversion not registered in dpkg-divert"
+fi
+
+# 4g. ccusage session tracker verification (when Claude or Codex enabled)
 if [ "${INSTALL_CLAUDE:-true}" = "true" ] || [ "${INSTALL_CODEX:-true}" = "true" ]; then
   if sudo -u "$DEVBOX_USER" -H bash -c 'export PATH="$HOME/.npm-global/bin:$PATH"; command -v ccusage >/dev/null 2>&1'; then
     CCUSAGE_VER=$(sudo -u "$DEVBOX_USER" -H bash -c 'export PATH="$HOME/.npm-global/bin:$PATH"; ccusage --version 2>&1 | head -n1' || true)

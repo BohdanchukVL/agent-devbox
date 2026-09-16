@@ -121,17 +121,34 @@ export class Composer {
     const text = this.textarea.value;
     if (!text && !withEnter) return;
 
+    this.lastSubmittedDraft = {
+      text,
+      paneId: this.currentPaneId
+    };
+
     this.onSend({
       text,
       withEnter,
       paneId: this.currentPaneId
     });
 
-    // Clear draft for this pane
+    // Clear current editor, keep backup in lastSubmittedDraft
     this.textarea.value = "";
     delete this.drafts[this.currentPaneId];
     this.saveDraftsToStorage();
     this.autoResize();
+  }
+
+  restoreLastDraft() {
+    if (this.lastSubmittedDraft && this.lastSubmittedDraft.text) {
+      this.currentPaneId = this.lastSubmittedDraft.paneId;
+      if (this.textarea) {
+        this.textarea.value = this.lastSubmittedDraft.text;
+        this.drafts[this.currentPaneId] = this.lastSubmittedDraft.text;
+        this.saveDraftsToStorage();
+        this.autoResize();
+      }
+    }
   }
 
   toggle(forceState) {

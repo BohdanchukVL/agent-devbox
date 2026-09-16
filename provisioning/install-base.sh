@@ -92,6 +92,15 @@ curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR:-22}.x" | bash -
 apt-get install -y nodejs
 npm install -g "pnpm@$(pin PNPM_VERSION 9.15.9)"
 
+log "installing language servers (LSP: TypeScript, Python, Rust, Go)"
+npm install -g typescript typescript-language-server pyright
+if [ ! -f /usr/local/bin/rust-analyzer ]; then
+  curl -fsSL https://github.com/rust-lang/rust-analyzer/releases/latest/download/rust-analyzer-x86_64-unknown-linux-gnu.gz | gzip -d > /usr/local/bin/rust-analyzer 2>/dev/null && chmod +x /usr/local/bin/rust-analyzer || true
+fi
+if command -v go >/dev/null 2>&1; then
+  GOBIN=/usr/local/bin go install golang.org/x/tools/gopls@latest >/dev/null 2>&1 || true
+fi
+
 if [ "$INSTALL_DOCKER" = "true" ]; then
   log "installing Docker"
   mkdir -p /etc/docker

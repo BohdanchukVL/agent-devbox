@@ -987,7 +987,8 @@ wss.on('connection', (ws, req) => {
     readonly: false
   };
 
-  const coordinator = getCoordinator(sessionName);
+  const coordKey = sessionName.startsWith('web-') ? 'main' : sessionName;
+  const coordinator = getCoordinator(coordKey);
   coordinator.addClient(clientState);
 
   ws.send(JSON.stringify({
@@ -1000,12 +1001,33 @@ wss.on('connection', (ws, req) => {
 
   term.onData(data => {
     if (ws.readyState === ws.OPEN) {
-      ws.send(data);
+      ws.send(Buffer.from(data, 'utf-8'));
     }
   });
 
-  ws.on('message', message => {
-    const raw = message.toString();
+  ws.on('message', (message, isBinary) => {
+    const isExplicitBinary = isBinary || (message instanceof Buffer && message.length > 0 && message[0] !== 0x7b);
+
+    if (isExplicitBinary) {
+      const raw = message.toString('utf-8');
+      if (clientState.readonly) {
+        if (isMouseWheel(raw)) {
+          term.write(raw);
+        }
+        return;
+      }
+      if (isGarbageResponse(raw)) return;
+      const cleanRaw = raw.replace(/\x1b\[[>?=]?[\d;]+c/g, '')
+                          .replace(/0;276;0c/g, '')
+                          .replace(/\x1b\[\d+(;\d+)?R/g, '')
+                          .replace(/\x1b\[0n/g, '');
+      if (cleanRaw) {
+        term.write(cleanRaw);
+      }
+      return;
+    }
+
+    const raw = message.toString('utf-8');
     const parsed = parseMessage(raw);
 
     if (parsed.isControl) {
@@ -1040,6 +1062,12 @@ wss.on('connection', (ws, req) => {
               return;
             }
             if (typeof msg.data === 'string') {
+              if (msg.paneId && msg.paneId !== 'default') {
+                const cleanPane = String(msg.paneId).replace(/[^a-zA-Z0-9_%-]/g, '');
+                if (cleanPane) {
+                  spawnSync('tmux', ['select-pane', '-t', cleanPane]);
+                }
+              }
               term.write(msg.data);
               if (msg.opId) {
                 ws.send(JSON.stringify({ type: MSG_ACK, opId: msg.opId }));
@@ -1052,6 +1080,13 @@ wss.on('connection', (ws, req) => {
               coordinator.setController('desktop');
             }
           } else if (msg.type === MSG_ACTION) {
+            if (clientState.readonly) {
+              ws.send(JSON.stringify({
+                type: MSG_ERROR,
+                message: 'Дія заблокована: увімкніть керування для зміни стану'
+              }));
+              return;
+            }
             if (msg.action === 'zoom') {
               spawnSync('tmux', ['resize-pane', '-Z', '-t', sessionName]);
             } else if (msg.action === 'select-pane' && msg.target) {

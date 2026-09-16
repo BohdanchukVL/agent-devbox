@@ -103,15 +103,28 @@ export class PanesManager {
 
       const item = document.createElement("div");
       item.className = "pane-item" + (isActive ? " active" : "");
-      item.innerHTML = `
-        <div class="pane-item-info">
-          <div class="pane-item-name">
-            ${winLabel} · ${cmdName} ${pane.index ? ("(" + pane.index + ")") : ""}
-          </div>
-          <div class="pane-item-path">${pathLabel || pane.path}</div>
-        </div>
-        ${isActive ? `<span class="pane-item-badge">Активна</span>` : ""}
-      `;
+
+      const info = document.createElement("div");
+      info.className = "pane-item-info";
+
+      const nameEl = document.createElement("div");
+      nameEl.className = "pane-item-name";
+      nameEl.textContent = `${winLabel} · ${cmdName}${pane.index ? ` (${pane.index})` : ""}`;
+
+      const pathEl = document.createElement("div");
+      pathEl.className = "pane-item-path";
+      pathEl.textContent = pathLabel || pane.path || "";
+
+      info.appendChild(nameEl);
+      info.appendChild(pathEl);
+      item.appendChild(info);
+
+      if (isActive) {
+        const badge = document.createElement("span");
+        badge.className = "pane-item-badge";
+        badge.textContent = "Активна";
+        item.appendChild(badge);
+      }
 
       item.addEventListener("click", () => {
         this.selectPane(pane);
