@@ -27,9 +27,44 @@ function getFreshnessKey(dir) {
   try {
     const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8', timeout: 3000 });
     if (head.status !== 0) return null;
-    const status = spawnSync('git', ['status', '--porcelain'], { cwd: dir, encoding: 'utf8', timeout: 3000 });
-    const dirtyCount = (status.stdout || '').split('\n').filter(Boolean).length;
-    return `${head.stdout.trim()}:${dirtyCount}`;
+    const status = spawnSync('git', ['status', '--porcelain', '-z', '-uall'], { cwd: dir, encoding: 'utf8', timeout: 3000 });
+    if (status.status !== 0) return null;
+
+    const raw = status.stdout || '';
+    if (!raw) {
+      return `${head.stdout.trim()}:clean`;
+    }
+
+    const parts = raw.split('\0');
+    if (parts.length > 0 && parts[parts.length - 1] === '') {
+      parts.pop();
+    }
+    if (parts.length === 0) {
+      return `${head.stdout.trim()}:clean`;
+    }
+
+    const h = crypto.createHash('sha1');
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      if (!part) continue;
+      const statusCode = part.slice(0, 2);
+      const filePath = part.slice(3);
+      const fullPath = path.join(dir, filePath);
+      try {
+        const st = fs.statSync(fullPath);
+        h.update(`${filePath}:${st.mtimeMs}:${st.size};`);
+      } catch {
+        h.update(`${filePath}:deleted;`);
+      }
+      if (statusCode.includes('R') || statusCode.includes('C')) {
+        i++;
+        if (i < parts.length) {
+          const oldPath = parts[i];
+          h.update(`renamed_from:${oldPath};`);
+        }
+      }
+    }
+    return `${head.stdout.trim()}:${h.digest('hex')}`;
   } catch {
     return null;
   }
@@ -79,14 +114,12 @@ function rebuildIndexInBackground(dir) {
           }
         } catch {}
       }
-      if (tags.length > 0) {
-        fs.mkdirSync(CACHE_DIR, { recursive: true });
-        const freshnessKey = getFreshnessKey(dir);
-        const cachePath = getCachePath(dir);
-        const tmpPath = `${cachePath}.${crypto.randomBytes(6).toString('hex')}.tmp`;
-        fs.writeFileSync(tmpPath, JSON.stringify({ freshnessKey, tags }));
-        fs.renameSync(tmpPath, cachePath);
-      }
+      fs.mkdirSync(CACHE_DIR, { recursive: true });
+      const freshnessKey = getFreshnessKey(dir);
+      const cachePath = getCachePath(dir);
+      const tmpPath = `${cachePath}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+      fs.writeFileSync(tmpPath, JSON.stringify({ freshnessKey, tags }));
+      fs.renameSync(tmpPath, cachePath);
     } catch {}
   });
   proc.on('error', () => { _rebuildingDirs.delete(dir); });
@@ -119,7 +152,6 @@ function updateFileInCache(filePath, symbols) {
       line: s.line
     }));
     data.tags = otherTags.concat(newTags);
-    data.freshnessKey = getFreshnessKey(projectDir);
     const tmpPath = `${cachePath}.${crypto.randomBytes(6).toString('hex')}.tmp`;
     fs.writeFileSync(tmpPath, JSON.stringify(data));
     fs.renameSync(tmpPath, cachePath);

@@ -12,6 +12,7 @@ module "core" {
   install_antigravity   = var.install_antigravity
   install_browser       = var.install_browser
   tailscale_authkey     = var.tailscale_authkey
+  tailscale_enabled     = var.tailscale_enabled
   workspace_device      = ""
   git_repo              = var.git_repo
   git_ref               = var.git_ref
@@ -106,7 +107,7 @@ resource "aws_security_group" "this" {
   }
 
   dynamic "ingress" {
-    for_each = var.tailscale_authkey != "" ? [1] : []
+    for_each = var.tailscale_enabled ? [1] : []
     content {
       description      = "Tailscale WireGuard"
       from_port        = 41641

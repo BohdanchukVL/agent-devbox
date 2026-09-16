@@ -52,6 +52,12 @@ variable "tailscale_authkey" {
   sensitive = true
 }
 
+variable "tailscale_enabled" {
+  description = "Whether Tailscale is enabled for the devbox"
+  type        = bool
+  default     = true
+}
+
 variable "instance_type" {
   description = "Cloud instance or server type for trigger tracking"
   type        = string
@@ -145,7 +151,7 @@ output "user_data" {
 output "ssh_cidrs" {
   description = "Resolved SSH CIDR list"
   value = var.ssh_allowed_cidrs != null ? var.ssh_allowed_cidrs : (
-    var.tailscale_authkey != "" ? [] : ["0.0.0.0/0", "::/0"]
+    var.tailscale_enabled ? [] : ["0.0.0.0/0", "::/0"]
   )
 }
 
@@ -161,6 +167,9 @@ output "replace_triggers" {
     var.install_antigravity,
     var.install_browser,
     var.username,
+    tostring(var.agent_sandbox_strict),
+    var.release_channel,
+    var.workspace_device,
     sha256(var.ssh_public_key)
   ])
 }

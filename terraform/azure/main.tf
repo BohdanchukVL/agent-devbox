@@ -12,6 +12,7 @@ module "core" {
   install_antigravity   = var.install_antigravity
   install_browser       = var.install_browser
   tailscale_authkey     = var.tailscale_authkey
+  tailscale_enabled     = var.tailscale_enabled
   workspace_device      = ""
   git_repo              = var.git_repo
   git_ref               = var.git_ref
@@ -27,7 +28,7 @@ module "core" {
 locals {
   # Azure uses "*" as wildcard instead of "0.0.0.0/0" + "::/0"
   ssh_cidrs = var.ssh_allowed_cidrs != null ? var.ssh_allowed_cidrs : (
-    var.tailscale_authkey != "" ? [] : ["*"]
+    var.tailscale_enabled ? [] : ["*"]
   )
   user_data = module.core.user_data
 }
@@ -73,7 +74,7 @@ resource "azurerm_network_security_group" "this" {
   }
 
   dynamic "security_rule" {
-    for_each = var.tailscale_authkey != "" ? [1] : []
+    for_each = var.tailscale_enabled ? [1] : []
     content {
       name                       = "Tailscale-WireGuard"
       priority                   = 110

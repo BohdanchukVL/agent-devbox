@@ -155,15 +155,30 @@ TMP_SETTINGS=$(mktemp)
 jq --arg cmd "$STATUSLINE_BIN" \
    --argjson strict "$([ "$STRICT_SANDBOX" = "false" ] && echo "false" || echo "true")" \
    --argjson domains "$ALLOWED_DOMAINS" \
-   '.statusLine = {"type": "command", "command": $cmd, "refreshInterval": 30} |
+   'del(.allowUnsandboxedCommands) |
+    .statusLine = {"type": "command", "command": $cmd, "refreshInterval": 30} |
     .sandbox = {
       "enabled": true,
       "failIfUnavailable": true,
+      "credentials": {
+        "files": [
+          {"path": "~/.aws", "mode": "deny"},
+          {"path": "~/.ssh", "mode": "deny"},
+          {"path": "~/.config/gh", "mode": "deny"}
+        ],
+        "envVars": [
+          {"name": "AWS_ACCESS_KEY_ID", "mode": "deny"},
+          {"name": "AWS_SECRET_ACCESS_KEY", "mode": "deny"},
+          {"name": "AWS_SESSION_TOKEN", "mode": "deny"},
+          {"name": "GITHUB_TOKEN", "mode": "deny"},
+          {"name": "GH_TOKEN", "mode": "deny"}
+        ]
+      },
       "network": {
         "allowedDomains": $domains
       }
     } |
-    if $strict then .allowUnsandboxedCommands = false else del(.allowUnsandboxedCommands) end' \
+    if $strict then .sandbox.allowUnsandboxedCommands = false else del(.sandbox.allowUnsandboxedCommands) end' \
    "$SETTINGS_FILE" > "$TMP_SETTINGS" && mv "$TMP_SETTINGS" "$SETTINGS_FILE"
 
 chown "$U:$U" "$SETTINGS_FILE"
@@ -179,6 +194,7 @@ approval_policy = "on-request"
 
 [sandbox_workspace_write]
 writable_roots = ["/workspace"]
+network_access = true
 TOML
 chown "$U:$U" "$H/.codex/config.toml"
 chmod 0600 "$H/.codex/config.toml"

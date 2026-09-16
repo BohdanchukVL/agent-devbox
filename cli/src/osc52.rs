@@ -19,6 +19,8 @@ enum State {
     OscPrefix(Vec<u8>),
     /// inside a confirmed OSC 52, collecting payload until BEL / ST
     Osc52 { buf: Vec<u8>, esc_pending: bool },
+    /// inside an oversized OSC 52; discard bytes until BEL / ST so it never passes through
+    OscDiscard { esc_pending: bool },
     /// inside some other OSC we just pass through, tracking termination
     OscOther { esc_pending: bool },
 }
@@ -142,11 +144,10 @@ impl Osc52Scanner {
                             esc_pending: true,
                         };
                     } else if buf.len() >= MAX_PAYLOAD {
-                        // oversized: give up swallowing, forward everything we held
-                        out.append(&mut self.held);
-                        out.extend_from_slice(&buf);
-                        out.push(b);
-                        self.state = State::OscOther {
+                        // oversized: do NOT forward to local terminal (prevents bypassing clipboard policy).
+                        // Discard the sequence until BEL or ST terminator.
+                        self.held.clear();
+                        self.state = State::OscDiscard {
                             esc_pending: b == 0x1b,
                         };
                     } else {
@@ -154,6 +155,15 @@ impl Osc52Scanner {
                         self.state = State::Osc52 {
                             buf,
                             esc_pending: false,
+                        };
+                    }
+                }
+                State::OscDiscard { esc_pending } => {
+                    if b == 0x07 || (esc_pending && b == b'\\') {
+                        self.state = State::Ground;
+                    } else {
+                        self.state = State::OscDiscard {
+                            esc_pending: b == 0x1b,
                         };
                     }
                 }
@@ -297,6 +307,22 @@ mod tests {
         let seq = b"\x1b[200~pasted\x1b[201~";
         let (out, clips) = full(&mut s, &[seq]);
         assert_eq!(out, seq);
+        assert!(clips.is_empty());
+    }
+
+    #[test]
+    fn oversized_osc52_is_discarded_and_not_passed_through() {
+        let mut s = Osc52Scanner::new();
+        let mut input = Vec::new();
+        input.extend_from_slice(b"\x1b]52;c;");
+        // MAX_PAYLOAD is 1 MiB. Append 1 MiB + 10 bytes, then BEL, then following text
+        input.resize(input.len() + MAX_PAYLOAD + 10, b'A');
+        input.push(0x07);
+        input.extend_from_slice(b"after");
+
+        let (out, clips) = full(&mut s, &[&input]);
+        // The oversized OSC 52 must NOT be passed to terminal output or clipboard
+        assert_eq!(out, b"after");
         assert!(clips.is_empty());
     }
 }

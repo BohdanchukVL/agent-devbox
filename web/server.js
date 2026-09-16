@@ -7,6 +7,21 @@ import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import { WebSocketServer } from 'ws';
 import pty from 'node-pty';
 import Busboy from 'busboy';
+import {
+  PROTOCOL_VERSION,
+  MSG_HELLO,
+  MSG_INPUT,
+  MSG_RESIZE,
+  MSG_ACTION,
+  MSG_CONTROL,
+  MSG_PANES,
+  MSG_STATUS,
+  MSG_PING,
+  MSG_PONG,
+  MSG_ERROR,
+  MSG_ACK,
+  parseMessage
+} from './public/app/protocol.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -92,21 +107,161 @@ function getPaneCwd(sessionName) {
   return fs.existsSync('/workspace') ? '/workspace' : (process.env.HOME || '/home/dev');
 }
 
-function isAllowedOrigin(origin, hostHeader, forwardedHost) {
-  if (!origin) return true; // Direct non-browser requests
+function getPaneId(sessionName) {
+  sessionName = sanitizeSessionName(sessionName);
+  try {
+    const paneId = execFileSync('tmux', ['display-message', '-p', '-t', sessionName, '#{pane_id}'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    }).trim();
+    if (paneId) return paneId;
+  } catch {}
+  return sessionName;
+}
+
+function isDaResponse(str) {
+  return typeof str === 'string' && (str.startsWith('\x1b[>') || str.startsWith('\x1b[?')) && str.endsWith('c');
+}
+
+function getPanesInfo(sessionName) {
+  sessionName = sanitizeSessionName(sessionName);
+  try {
+    const winOutput = execFileSync('tmux', [
+      'list-windows', '-t', sessionName,
+      '-F', '#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{window_panes}\t#{window_zoomed_flag}'
+    ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+
+    const windows = winOutput ? winOutput.split('\n').filter(Boolean).map(line => {
+      const parts = line.split('\t');
+      return {
+        id: parts[0] || '',
+        index: parseInt(parts[1], 10) || 1,
+        name: parts[2] || '',
+        active: parts[3] === '1',
+        panesCount: parseInt(parts[4], 10) || 1,
+        zoomed: parts[5] === '1'
+      };
+    }) : [];
+
+    const paneOutput = execFileSync('tmux', [
+      'list-panes', '-s', '-t', sessionName,
+      '-F', '#{window_id}\t#{pane_id}\t#{pane_index}\t#{pane_title}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_active}'
+    ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+
+    const panes = paneOutput ? paneOutput.split('\n').filter(Boolean).map(line => {
+      const parts = line.split('\t');
+      return {
+        windowId: parts[0] || '',
+        id: parts[1] || '',
+        index: parseInt(parts[2], 10) || 1,
+        title: parts[3] || '',
+        command: parts[4] || '',
+        path: parts[5] || '',
+        active: parts[6] === '1'
+      };
+    }) : [];
+
+    return { ok: true, session: sessionName, windows, panes };
+  } catch (err) {
+    return { ok: false, error: err.message, session: sessionName, windows: [], panes: [] };
+  }
+}
+
+class SessionCoordinator {
+  constructor(sessionName) {
+    this.sessionName = sessionName;
+    this.clients = new Set();
+    this.controller = 'desktop';
+  }
+
+  addClient(client) {
+    this.clients.add(client);
+    this.recompute();
+  }
+
+  removeClient(client) {
+    this.clients.delete(client);
+    this.recompute();
+  }
+
+  recompute() {
+    const hasDesktop = Array.from(this.clients).some(c => c.clientType === 'desktop');
+    const hasMobile = Array.from(this.clients).some(c => c.clientType === 'mobile');
+
+    if (!hasMobile) {
+      this.controller = 'desktop';
+    } else if (!hasDesktop) {
+      this.controller = 'mobile';
+    }
+    for (const c of this.clients) {
+      c.isController = (c.clientType === this.controller);
+      c.readonly = !c.isController;
+    }
+  }
+
+  setController(newController) {
+    this.controller = newController;
+    for (const c of this.clients) {
+      c.isController = (c.clientType === this.controller);
+      c.readonly = !c.isController;
+    }
+    this.broadcastControl();
+  }
+
+  broadcastControl() {
+    const msg = JSON.stringify({
+      type: 'control',
+      controller: this.controller,
+      session: this.sessionName
+    });
+    for (const c of this.clients) {
+      if (c.ws && c.ws.readyState === c.ws.OPEN) {
+        c.ws.send(msg);
+      }
+    }
+  }
+}
+
+const sessionCoordinators = new Map();
+function getCoordinator(sessionName) {
+  if (!sessionCoordinators.has(sessionName)) {
+    sessionCoordinators.set(sessionName, new SessionCoordinator(sessionName));
+  }
+  return sessionCoordinators.get(sessionName);
+}
+
+function isTrustedProxyReq(req) {
+  const ip = normalizeIp(req?.socket?.remoteAddress);
+  return isLoopback(ip);
+}
+
+function isAllowedOrigin(origin, hostHeader, forwardedHost, isTrustedProxy = false, forwardedProto = null, isEncrypted = false) {
+  if (!origin) return true; // Direct non-browser requests (curl, CLI, etc.)
   try {
     const originUrl = new URL(origin);
-    const originHost = originUrl.host;
-    const originHostname = originUrl.hostname;
+    const originHost = originUrl.host.toLowerCase();
+    const originProto = originUrl.protocol.toLowerCase();
 
-    if (originHost === hostHeader || originHostname === hostHeader) return true;
-    if (forwardedHost && (originHost === forwardedHost || originHostname === forwardedHost)) return true;
+    if (ALLOWED_ORIGIN) {
+      const allowed = ALLOWED_ORIGIN.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+      if (allowed.includes(origin.toLowerCase()) || allowed.includes(originHost)) return true;
+    }
 
-    const hostNameOnly = (hostHeader || '').split(':')[0];
-    const fwdNameOnly = (forwardedHost || '').split(':')[0];
-    if (originHostname === hostNameOnly || (fwdNameOnly && originHostname === fwdNameOnly)) return true;
+    const expectedProto = (isTrustedProxy && forwardedProto ? forwardedProto : (isEncrypted ? 'https' : 'http')).toLowerCase().replace(/:$/, '') + ':';
 
-    if (ALLOWED_ORIGIN && origin === ALLOWED_ORIGIN) return true;
+    // Forwarded host is ONLY trusted when request arrives via local reverse proxy (e.g. Tailscale Serve on loopback)
+    if (isTrustedProxy && forwardedHost) {
+      if (originHost === forwardedHost.toLowerCase() && originProto === expectedProto) {
+        return true;
+      }
+    }
+
+    // Direct match: scheme, host, and port must match exactly
+    if (hostHeader && originHost === hostHeader.toLowerCase()) {
+      if (originProto === expectedProto) {
+        return true;
+      }
+    }
   } catch {}
   return false;
 }
@@ -349,7 +504,11 @@ async function handleRequest(req, res) {
     }
   }
 
-  if (origin && isAllowedOrigin(origin, hostHeader, forwardedHost)) {
+  const trusted = isTrustedProxyReq(req);
+  const forwardedProto = trusted ? req.headers['x-forwarded-proto'] : null;
+  const isEncrypted = Boolean(req.socket?.encrypted);
+
+  if (origin && isAllowedOrigin(origin, hostHeader, forwardedHost, trusted, forwardedProto, isEncrypted)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -362,7 +521,7 @@ async function handleRequest(req, res) {
     return;
   }
 
-  if (req.method === 'POST' && origin && !isAllowedOrigin(origin, hostHeader, forwardedHost)) {
+  if (req.method === 'POST' && origin && !isAllowedOrigin(origin, hostHeader, forwardedHost, trusted, forwardedProto, isEncrypted)) {
     res.writeHead(403, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Forbidden: cross-origin POST not allowed' }));
     return;
@@ -383,17 +542,63 @@ async function handleRequest(req, res) {
     const session = sanitizeSessionName(url.searchParams.get('session') || 'main');
     ensureTmuxSession(session);
     const cwd = getPaneCwd(session);
-
-    const busboy = Busboy({ headers: req.headers, limits: { fileSize: 100 * 1024 * 1024 } });
-    let uploadedFile = null;
-    const filePromises = [];
+    const targetPane = getPaneId(session);
 
     const isProject = cwd.startsWith('/workspace') || fs.existsSync(path.join(cwd, '.git'));
     const inboxDir = isProject
       ? path.join(cwd, '.devbox-inbox')
       : path.join(process.env.HOME || '/home/dev', '.devbox', 'inbox');
 
-    fs.mkdirSync(inboxDir, { recursive: true });
+    try {
+      fs.mkdirSync(inboxDir, { recursive: true });
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `Cannot create inbox directory: ${err.message}` }));
+      return;
+    }
+
+    let busboy;
+    try {
+      busboy = Busboy({ headers: req.headers, limits: { fileSize: 100 * 1024 * 1024, files: 10 } });
+    } catch (err) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `Invalid multipart request: ${err.message}` }));
+      return;
+    }
+
+    let responded = false;
+    const tempFiles = [];
+
+    const cleanupTempFiles = () => {
+      for (const tempPath of tempFiles) {
+        try {
+          if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+        } catch {}
+      }
+    };
+
+    const fail = (statusCode, message) => {
+      if (responded) return;
+      responded = true;
+      cleanupTempFiles();
+      try {
+        req.unpipe(busboy);
+        req.resume();
+      } catch {}
+      res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: message }));
+    };
+
+    busboy.on('error', (err) => {
+      fail(400, `Upload parsing error: ${err.message}`);
+    });
+
+    req.on('error', (err) => {
+      fail(400, `Request error: ${err.message}`);
+    });
+
+    let uploadedFile = null;
+    const filePromises = [];
 
     busboy.on('file', (name, file, info) => {
       const { filename } = info;
@@ -401,16 +606,60 @@ async function handleRequest(req, res) {
         file.resume();
         return;
       }
-      const cleanName = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_');
+
+      // POSIX NAME_MAX is 255 bytes. Ensure total destName and .destName.tmp do not exceed this limit.
+      const rawBase = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_') || 'uploaded_file';
+      const ext = path.extname(rawBase);
+      const nameWithoutExt = ext ? rawBase.slice(0, -ext.length) : rawBase;
+      const maxBaseLen = Math.max(1, 200 - ext.length);
+      const safeBase = (nameWithoutExt.length > maxBaseLen ? nameWithoutExt.slice(0, maxBaseLen) : nameWithoutExt) + ext;
+
       const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
-      const destName = `${stamp}-${cleanName}`;
+      const uid = crypto.randomBytes(4).toString('hex');
+      const destName = `${stamp}-${uid}-${safeBase}`;
       const destPath = path.join(inboxDir, destName);
+      const tempPath = path.join(inboxDir, `.${destName}.tmp`);
+      tempFiles.push(tempPath);
+
+      let fileError = null;
+      let writeStream = null;
+
+      file.on('limit', () => {
+        fileError = new Error('File size limit exceeded (max 100MB)');
+        fail(400, fileError.message);
+      });
+      file.on('error', (err) => {
+        fileError = err;
+        fail(400, `File stream error: ${err.message}`);
+      });
 
       const p = new Promise((resolve, reject) => {
-        const writeStream = fs.createWriteStream(destPath);
+        try {
+          writeStream = fs.createWriteStream(tempPath);
+        } catch (err) {
+          return reject(err);
+        }
+
+        writeStream.on('error', (err) => {
+          reject(err);
+        });
+
         file.pipe(writeStream);
 
         writeStream.on('finish', () => {
+          if (fileError) {
+            return reject(fileError);
+          }
+          if (file.truncated) {
+            return reject(new Error('File truncated: maximum size 100MB exceeded'));
+          }
+
+          try {
+            fs.renameSync(tempPath, destPath);
+          } catch (err) {
+            return reject(err);
+          }
+
           const relativePath = isProject
             ? `.devbox-inbox/${destName}`
             : destPath;
@@ -421,34 +670,47 @@ async function handleRequest(req, res) {
             fullPath: destPath
           };
 
+          let inserted = false;
           try {
-            execFileSync('tmux', ['send-keys', '-t', session, '-l', `${relativePath} `]);
+            execFileSync('tmux', ['send-keys', '-t', targetPane, '-l', `${relativePath} `]);
+            inserted = true;
           } catch (e) {
-            console.error(`[upload] failed to send-keys to ${session}:`, e.message);
+            console.error(`[upload] failed to send-keys to ${targetPane}:`, e.message);
           }
+          uploadedFile.inserted = inserted;
           resolve();
         });
+      });
 
-        writeStream.on('error', reject);
+      // Immediately handle rejection so write errors before busboy.finish never crash the process
+      p.catch((err) => {
+        try {
+          file.unpipe();
+          file.resume();
+        } catch {}
+        if (writeStream) {
+          try { writeStream.destroy(); } catch {}
+        }
+        fail(500, `Storage error: ${err.message}`);
       });
 
       filePromises.push(p);
     });
 
     busboy.on('finish', async () => {
+      if (responded) return;
       try {
         await Promise.all(filePromises);
       } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: err.message }));
-        return;
+        return fail(500, err.message);
       }
 
+      if (responded) return;
       if (!uploadedFile) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'No file received' }));
-        return;
+        return fail(400, 'No file received');
       }
+
+      responded = true;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, file: uploadedFile }));
     });
@@ -472,6 +734,18 @@ async function handleRequest(req, res) {
           spawnSync('tmux', ['next-window', '-t', session]);
         } else if (data.action === 'prev-window') {
           spawnSync('tmux', ['previous-window', '-t', session]);
+        } else if (data.action === 'select-pane' && data.target) {
+          const targetPane = String(data.target).replace(/[^a-zA-Z0-9_%-]/g, '');
+          spawnSync('tmux', ['select-pane', '-t', targetPane]);
+        } else if (data.action === 'select-window' && data.target) {
+          const targetWin = String(data.target).replace(/[^a-zA-Z0-9_%-]/g, '');
+          spawnSync('tmux', ['select-window', '-t', targetWin]);
+        } else if (data.action === 'take-control') {
+          const coordinator = getCoordinator(session);
+          coordinator.setController(data.client === 'mobile' ? 'mobile' : 'desktop');
+        } else if (data.action === 'release-control') {
+          const coordinator = getCoordinator(session);
+          coordinator.setController('desktop');
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
@@ -483,17 +757,27 @@ async function handleRequest(req, res) {
     return;
   }
 
+  if (req.method === 'GET' && pathname === '/api/panes') {
+    const session = sanitizeSessionName(url.searchParams.get('session') || 'main');
+    const info = getPanesInfo(session);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(info));
+    return;
+  }
+
   if (req.method === 'GET' && pathname === '/api/status') {
     const session = sanitizeSessionName(url.searchParams.get('session') || 'main');
     let cwd = '';
     try {
       cwd = getPaneCwd(session);
     } catch {}
+    const coordinator = getCoordinator(session);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       ok: true,
       session,
       cwd,
+      controller: coordinator.controller,
       node: process.version,
       auth: AUTH_MODE,
       user: identity ? identity.login : null
@@ -514,7 +798,8 @@ async function handleRequest(req, res) {
   } else if (pathname.startsWith('/vendor/addon-webgl/')) {
     targetPath = path.join(NODE_MODULES, '@xterm', 'addon-webgl', pathname.replace('/vendor/addon-webgl/', ''));
   } else {
-    targetPath = path.join(PUBLIC_DIR, pathname);
+    const safePath = path.normalize(pathname).replace(/^(\.\.[\/\\])+/, '');
+    targetPath = path.join(PUBLIC_DIR, safePath);
   }
 
   if (fs.existsSync(targetPath) && fs.statSync(targetPath).isFile()) {
@@ -538,7 +823,20 @@ function requestListener(req, res) {
 
 // ── WebSocket ─────────────────────────────────────────────────────────────────
 
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({
+  noServer: true,
+  handleProtocols: (protocols) => {
+    if (protocols) {
+      if (typeof protocols.has === 'function' && protocols.has('devbox-terminal.v2')) {
+        return 'devbox-terminal.v2';
+      }
+      if (Array.isArray(protocols) && protocols.includes('devbox-terminal.v2')) {
+        return 'devbox-terminal.v2';
+      }
+    }
+    return false;
+  }
+});
 
 function rejectUpgrade(socket, code, reason) {
   try {
@@ -552,13 +850,16 @@ async function handleUpgrade(req, socket, head) {
   const forwardedHost = req.headers['x-forwarded-host'];
   const url = new URL(req.url, `http://${hostHeader}`);
   const origin = req.headers.origin;
+  const trusted = isTrustedProxyReq(req);
+  const forwardedProto = trusted ? req.headers['x-forwarded-proto'] : null;
+  const isEncrypted = Boolean(req.socket?.encrypted);
 
   if (AUTH_MODE === 'tailscale' && !(await isAllowedHost(hostHeader))) {
     console.warn(`[ws] rejected connection: unexpected host "${hostHeader}"`);
     rejectUpgrade(socket, 421, 'Misdirected Request');
     return;
   }
-  if (origin && !isAllowedOrigin(origin, hostHeader, forwardedHost)) {
+  if (origin && !isAllowedOrigin(origin, hostHeader, forwardedHost, trusted, forwardedProto, isEncrypted)) {
     console.warn(`[ws] rejected connection: unauthorized origin "${origin}" for host "${hostHeader}" (forwarded: "${forwardedHost || 'none'}")`);
     rejectUpgrade(socket, 403, 'Forbidden');
     return;
@@ -598,6 +899,8 @@ wss.on('close', () => {
   clearInterval(pingInterval);
 });
 
+const activeSessionClients = new Map();
+
 wss.on('connection', (ws, req) => {
   const hostHeader = req.headers.host || 'localhost';
   const url = new URL(req.url, `http://${hostHeader}`);
@@ -625,9 +928,9 @@ wss.on('connection', (ws, req) => {
     isEphemeral = true;
   }
 
-  console.log(`[ws] client connected (${clientType})${who} -> session "${sessionName}" [${cols}x${rows}]`);
+  activeSessionClients.set(sessionName, (activeSessionClients.get(sessionName) || 0) + 1);
 
-  ws.send(JSON.stringify({ type: 'session', session: sessionName }));
+  console.log(`[ws] client connected (${clientType})${who} -> session "${sessionName}" [${cols}x${rows}]`);
 
   const term = pty.spawn('tmux', ['attach-session', '-t', sessionName], {
     name: 'xterm-256color',
@@ -641,6 +944,26 @@ wss.on('connection', (ws, req) => {
     }
   });
 
+  const clientState = {
+    ws,
+    clientType,
+    sessionName,
+    term,
+    isController: false,
+    readonly: false
+  };
+
+  const coordinator = getCoordinator(sessionName);
+  coordinator.addClient(clientState);
+
+  ws.send(JSON.stringify({
+    type: 'session',
+    session: sessionName,
+    controller: coordinator.controller,
+    readonly: clientState.readonly,
+    protocol: PROTOCOL_VERSION
+  }));
+
   term.onData(data => {
     if (ws.readyState === ws.OPEN) {
       ws.send(data);
@@ -648,20 +971,90 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('message', message => {
-    const str = message.toString();
-    if (str.startsWith('{')) {
-      try {
-        const parsed = JSON.parse(str);
-        if (parsed.type === 'resize' && parsed.cols && parsed.rows) {
-          const c = Math.max(parseInt(parsed.cols, 10) || 20, 10);
-          const r = Math.max(parseInt(parsed.rows, 10) || 10, 5);
-          term.resize(c, r);
-          return;
+    const raw = message.toString();
+    const parsed = parseMessage(raw);
+
+    if (parsed.isControl) {
+      if (parsed.message) {
+        const msg = parsed.message;
+        try {
+          if (msg.type === MSG_HELLO) {
+            ws.send(JSON.stringify({
+              type: MSG_HELLO,
+              session: sessionName,
+              paneId: getPaneId(sessionName),
+              controller: coordinator.controller,
+              readonly: clientState.readonly,
+              cols: term.cols,
+              rows: term.rows,
+              protocol: PROTOCOL_VERSION
+            }));
+          } else if (msg.type === MSG_RESIZE) {
+            if (clientState.readonly) {
+              // Observer mode: do NOT alter shared terminal geometry!
+              return;
+            }
+            const c = Math.max(parseInt(msg.cols, 10) || 20, 10);
+            const r = Math.max(parseInt(msg.rows, 10) || 10, 5);
+            term.resize(c, r);
+          } else if (msg.type === MSG_INPUT) {
+            if (clientState.readonly) {
+              ws.send(JSON.stringify({
+                type: MSG_ERROR,
+                message: 'Режим перегляду: увімкніть керування для введення'
+              }));
+              return;
+            }
+            if (typeof msg.data === 'string') {
+              term.write(msg.data);
+              if (msg.opId) {
+                ws.send(JSON.stringify({ type: MSG_ACK, opId: msg.opId }));
+              }
+            }
+          } else if (msg.type === MSG_CONTROL) {
+            if (msg.action === 'request') {
+              coordinator.setController(clientState.clientType);
+            } else if (msg.action === 'release') {
+              coordinator.setController('desktop');
+            }
+          } else if (msg.type === MSG_ACTION) {
+            if (msg.action === 'zoom') {
+              spawnSync('tmux', ['resize-pane', '-Z', '-t', sessionName]);
+            } else if (msg.action === 'select-pane' && msg.target) {
+              const targetPane = String(msg.target).replace(/[^a-zA-Z0-9_%-]/g, '');
+              spawnSync('tmux', ['select-pane', '-t', targetPane]);
+            } else if (msg.action === 'select-window' && msg.target) {
+              const targetWin = String(msg.target).replace(/[^a-zA-Z0-9_%-]/g, '');
+              spawnSync('tmux', ['select-window', '-t', targetWin]);
+            }
+            ws.send(JSON.stringify({
+              type: MSG_PANES,
+              data: getPanesInfo(sessionName)
+            }));
+          } else if (msg.type === MSG_PING) {
+            ws.send(JSON.stringify({ type: MSG_PONG, t: Date.now() }));
+          }
+        } catch (err) {
+          console.warn('[ws] control message error:', err.message);
+          ws.send(JSON.stringify({ type: MSG_ERROR, message: err.message }));
         }
-      } catch {}
+      } else {
+        console.warn('[ws] dropped invalid control frame');
+      }
+      return; // CRITICAL: NEVER write control frames to stdin!
     }
 
-    term.write(str);
+    // Filter out client Device Attributes responses (\x1b[>0;276;0c, \x1b[?1;2c, etc.)
+    if (isDaResponse(raw)) {
+      return;
+    }
+
+    // Direct text / keystrokes: only allow if not in readonly observer mode
+    if (clientState.readonly) {
+      return;
+    }
+
+    term.write(raw);
   });
 
   ws.on('close', () => {
@@ -669,8 +1062,22 @@ wss.on('connection', (ws, req) => {
     try {
       term.kill();
     } catch {}
-    if (isEphemeral) {
-      spawnSync('tmux', ['kill-session', '-t', sessionName], { stdio: 'ignore' });
+    coordinator.removeClient(clientState);
+    if (coordinator.clients.size === 0) {
+      sessionCoordinators.delete(sessionName);
+    }
+    const remaining = (activeSessionClients.get(sessionName) || 1) - 1;
+    if (remaining <= 0) {
+      activeSessionClients.delete(sessionName);
+      if (isEphemeral) {
+        setTimeout(() => {
+          if (!activeSessionClients.has(sessionName)) {
+            spawnSync('tmux', ['kill-session', '-t', sessionName], { stdio: 'ignore' });
+          }
+        }, 3000);
+      }
+    } else {
+      activeSessionClients.set(sessionName, remaining);
     }
   });
 
@@ -731,7 +1138,12 @@ export {
   isAllowedHost,
   resolveIdentity,
   identityAllowed,
-  authorize
+  authorize,
+  isDaResponse,
+  getPanesInfo,
+  SessionCoordinator,
+  sessionCoordinators,
+  getCoordinator
 };
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {

@@ -184,3 +184,61 @@ test('handleSchemaDump caps output at 64KB for large schemas', async () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('resolveConnection respects DEVBOX_DB_DISABLE_ENV=1', () => {
+  const oldEnv = process.env.DATABASE_URL;
+  const oldDisable = process.env.DEVBOX_DB_DISABLE_ENV;
+
+  try {
+    process.env.DATABASE_URL = 'sqlite:///workspace/prod.db';
+    process.env.DEVBOX_DB_DISABLE_ENV = '1';
+
+    const res = resolveConnection();
+    assert.notEqual(res.target, 'sqlite:///workspace/prod.db');
+  } finally {
+    if (oldEnv) process.env.DATABASE_URL = oldEnv; else delete process.env.DATABASE_URL;
+    if (oldDisable) process.env.DEVBOX_DB_DISABLE_ENV = oldDisable; else delete process.env.DEVBOX_DB_DISABLE_ENV;
+  }
+});
+
+test('handleQuery enforces row limits on queries with LIMIT literal or custom limits', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const sqlite = await import('node:sqlite');
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'db-limit-test-'));
+  const dbPath = path.join(tmpDir, 'test.db');
+  const db = new sqlite.DatabaseSync(dbPath);
+  db.exec(`CREATE TABLE items (id INTEGER PRIMARY KEY, status TEXT);`);
+  for (let i = 1; i <= 250; i++) {
+    db.exec(`INSERT INTO items (id, status) VALUES (${i}, 'LIMIT');`);
+  }
+  db.close();
+
+  try {
+    const { handleQuery } = await import('../index.js');
+
+    // 1. SELECT with literal 'LIMIT' must still respect limit: 1
+    const res1 = await handleQuery({ connection: dbPath, query: "SELECT * FROM items WHERE status = 'LIMIT'", limit: 1 });
+    assert.ok(res1.text);
+    assert.ok(res1.text.includes('1 rows'), `Expected 1 row but got: ${res1.text}`);
+
+    // 2. Query with explicit internal LIMIT 200 must be clamped by args.limit (1)
+    const res2 = await handleQuery({ connection: dbPath, query: "SELECT * FROM items LIMIT 200", limit: 1 });
+    assert.ok(res2.text);
+    assert.ok(res2.text.includes('1 rows'), `Expected 1 row but got: ${res2.text}`);
+
+    // 3. Query with semicolon inside literal must be allowed
+    const res3 = await handleQuery({ connection: dbPath, query: "SELECT ';' AS semi" });
+    assert.ok(res3.text);
+    assert.ok(!res3.error);
+
+    // 4. Query with actual multiple statements must be blocked
+    const res4 = await handleQuery({ connection: dbPath, query: "SELECT 1; SELECT 2" });
+    assert.ok(res4.error);
+    assert.ok(res4.error.includes('Multiple SQL statements'));
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});

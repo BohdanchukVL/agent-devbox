@@ -157,7 +157,40 @@ jobs:
       # ── Terraform Destroy ───────────────────────────────────────────────────
       - name: Terraform destroy
         working-directory: terraform/${{ inputs.cloud }}
-        run: terraform destroy -auto-approve
+        run: |
+          if [ "${{ inputs.cloud }}" = "aws" ]; then
+            terraform destroy -auto-approve -var="region=${{ inputs.location }}"
+          elif [ "${{ inputs.cloud }}" = "hetzner" ]; then
+            terraform destroy -auto-approve -var="location=${{ inputs.location }}"
+          elif [ "${{ inputs.cloud }}" = "azure" ]; then
+            terraform destroy -auto-approve -var="location=${{ inputs.location }}"
+          else
+            terraform destroy -auto-approve
+          fi
+
+      - name: Cleanup runner deploy key from state storage
+        if: success()
+        run: |
+          STATE_KEY="${{ inputs.state_key != '' && inputs.state_key || format('{0}/terraform.tfstate', inputs.cloud) }}"
+          KEY_SLUG=$(echo -n "$STATE_KEY" | sha256sum | cut -c1-12)
+          KEY_PATH="runner/${KEY_SLUG}/id_ed25519"
+          PUB_PATH="runner/${KEY_SLUG}/id_ed25519.pub"
+
+          if [ "${{ inputs.cloud }}" = "hetzner" ]; then
+            BUCKET="${{ steps.state_hetzner.outputs.bucket }}"
+            ENDPOINT="${{ steps.state_hetzner.outputs.endpoint }}"
+            aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3 rm "s3://$BUCKET/$KEY_PATH" 2>/dev/null || true
+            aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3 rm "s3://$BUCKET/$PUB_PATH" 2>/dev/null || true
+          elif [ "${{ inputs.cloud }}" = "aws" ]; then
+            BUCKET="${{ steps.state_aws.outputs.bucket }}"
+            REGION="${{ inputs.location }}"
+            aws s3 rm "s3://$BUCKET/$KEY_PATH" --region "$REGION" 2>/dev/null || true
+            aws s3 rm "s3://$BUCKET/$PUB_PATH" --region "$REGION" 2>/dev/null || true
+          elif [ "${{ inputs.cloud }}" = "azure" ]; then
+            SA="${{ steps.state_azure.outputs.storage_account }}"
+            az storage blob delete --account-name "$SA" --account-key "$ARM_ACCESS_KEY" -c "tfstate" -n "$KEY_PATH" 2>/dev/null || true
+            az storage blob delete --account-name "$SA" --account-key "$ARM_ACCESS_KEY" -c "tfstate" -n "$PUB_PATH" 2>/dev/null || true
+          fi
 
       - name: Summary
         run: echo "## 🗑️ ${{ inputs.cloud }} environment destroyed" >> "$GITHUB_STEP_SUMMARY"

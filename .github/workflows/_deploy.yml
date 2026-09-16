@@ -112,27 +112,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Generate ephemeral SSH key for runner
-        id: runner_key
-        run: |
-          ssh-keygen -t ed25519 -f /tmp/runner_key -N "" -q
-          echo "private_key_path=/tmp/runner_key" >> "$GITHUB_OUTPUT"
-          echo "public_key=$(cat /tmp/runner_key.pub)" >> "$GITHUB_OUTPUT"
-          if [ "${{ inputs.use_runner_ssh_key }}" = "true" ]; then
-            echo "TF_VAR_ssh_public_key=$(cat /tmp/runner_key.pub)" >> "$GITHUB_ENV"
-          fi
-
-      - name: Validate SSH public key
-        run: |
-          KEY_TO_CHECK="${TF_VAR_ssh_public_key}"
-          if [ "${{ inputs.use_runner_ssh_key }}" = "true" ]; then
-            KEY_TO_CHECK="$(cat /tmp/runner_key.pub)"
-          fi
-          if ! ssh-keygen -l -f /dev/stdin <<< "$KEY_TO_CHECK" >/dev/null 2>&1; then
-            echo '::error::SSH public key is not a valid OpenSSH public key.'
-            exit 1
-          fi
-
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_wrapper: false
@@ -243,6 +222,76 @@ jobs:
           echo "resource_group=$RG" >> "$GITHUB_OUTPUT"
           echo "storage_account=$SA" >> "$GITHUB_OUTPUT"
 
+      # ── Resolve Runner Deploy SSH Key (WP-1A) ──────────────────────────────
+      - name: Resolve runner deploy SSH key
+        id: runner_key
+        run: |
+          mkdir -p ~/.ssh
+          STATE_KEY="${{ inputs.state_key != '' && inputs.state_key || format('{0}/terraform.tfstate', inputs.cloud) }}"
+          KEY_SLUG=$(echo -n "$STATE_KEY" | sha256sum | cut -c1-12)
+          KEY_PATH="runner/${KEY_SLUG}/id_ed25519"
+          PUB_PATH="runner/${KEY_SLUG}/id_ed25519.pub"
+
+          if [ "${{ inputs.use_runner_ssh_key }}" = "true" ]; then
+            echo "Generating fresh ephemeral SSH key (use_runner_ssh_key=true)..."
+            ssh-keygen -t ed25519 -f /tmp/runner_key -N "" -q
+            echo "TF_VAR_ssh_public_key=$(cat /tmp/runner_key.pub)" >> "$GITHUB_ENV"
+          else
+            KEY_FOUND=false
+            if [ "${{ inputs.cloud }}" = "hetzner" ]; then
+              BUCKET="${{ steps.state_hetzner.outputs.bucket }}"
+              ENDPOINT="${{ steps.state_hetzner.outputs.endpoint }}"
+              if aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3 cp "s3://$BUCKET/$KEY_PATH" /tmp/runner_key 2>/dev/null; then
+                aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3 cp "s3://$BUCKET/$PUB_PATH" /tmp/runner_key.pub 2>/dev/null || ssh-keygen -y -f /tmp/runner_key > /tmp/runner_key.pub
+                KEY_FOUND=true
+              fi
+            elif [ "${{ inputs.cloud }}" = "aws" ]; then
+              BUCKET="${{ steps.state_aws.outputs.bucket }}"
+              REGION="${{ inputs.location }}"
+              if aws s3 cp "s3://$BUCKET/$KEY_PATH" /tmp/runner_key --region "$REGION" 2>/dev/null; then
+                aws s3 cp "s3://$BUCKET/$PUB_PATH" /tmp/runner_key.pub --region "$REGION" 2>/dev/null || ssh-keygen -y -f /tmp/runner_key > /tmp/runner_key.pub
+                KEY_FOUND=true
+              fi
+            elif [ "${{ inputs.cloud }}" = "azure" ]; then
+              SA="${{ steps.state_azure.outputs.storage_account }}"
+              if az storage blob download --account-name "$SA" --account-key "$ARM_ACCESS_KEY" -c "tfstate" -n "$KEY_PATH" -f /tmp/runner_key --output none 2>/dev/null; then
+                az storage blob download --account-name "$SA" --account-key "$ARM_ACCESS_KEY" -c "tfstate" -n "$PUB_PATH" -f /tmp/runner_key.pub --output none 2>/dev/null || ssh-keygen -y -f /tmp/runner_key > /tmp/runner_key.pub
+                KEY_FOUND=true
+              fi
+            fi
+
+            if [ "$KEY_FOUND" = "true" ]; then
+              echo "Reusing existing runner deploy SSH key from state storage ($KEY_PATH)"
+            else
+              echo "Generating new runner deploy SSH key and storing in state storage ($KEY_PATH)..."
+              ssh-keygen -t ed25519 -f /tmp/runner_key -N "" -q
+              if [ "${{ inputs.cloud }}" = "hetzner" ]; then
+                aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3 cp /tmp/runner_key "s3://$BUCKET/$KEY_PATH"
+                aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3 cp /tmp/runner_key.pub "s3://$BUCKET/$PUB_PATH"
+              elif [ "${{ inputs.cloud }}" = "aws" ]; then
+                aws s3 cp /tmp/runner_key "s3://$BUCKET/$KEY_PATH" --region "$REGION"
+                aws s3 cp /tmp/runner_key.pub "s3://$BUCKET/$PUB_PATH" --region "$REGION"
+              elif [ "${{ inputs.cloud }}" = "azure" ]; then
+                az storage blob upload --account-name "$SA" --account-key "$ARM_ACCESS_KEY" -c "tfstate" -f /tmp/runner_key -n "$KEY_PATH" --overwrite
+                az storage blob upload --account-name "$SA" --account-key "$ARM_ACCESS_KEY" -c "tfstate" -f /tmp/runner_key.pub -n "$PUB_PATH" --overwrite
+              fi
+            fi
+          fi
+          chmod 0600 /tmp/runner_key
+          echo "private_key_path=/tmp/runner_key" >> "$GITHUB_OUTPUT"
+          echo "public_key=$(cat /tmp/runner_key.pub)" >> "$GITHUB_OUTPUT"
+
+      - name: Validate SSH public key
+        run: |
+          KEY_TO_CHECK="${TF_VAR_ssh_public_key}"
+          if [ "${{ inputs.use_runner_ssh_key }}" = "true" ]; then
+            KEY_TO_CHECK="$(cat /tmp/runner_key.pub)"
+          fi
+          if ! ssh-keygen -l -f /dev/stdin <<< "$KEY_TO_CHECK" >/dev/null 2>&1; then
+            echo '::error::SSH public key is not a valid OpenSSH public key.'
+            exit 1
+          fi
+
       # ── Ingress CIDRs ───────────────────────────────────────────────────────
       - name: Configure SSH ingress CIDRs (include runner IP for readiness gate)
         env:
@@ -290,7 +339,14 @@ jobs:
             echo "Warning: Tailscale OAuth key generation failed, falling back to static key"
           fi
           STATIC_KEY="${{ secrets.TAILSCALE_AUTHKEY || secrets.TAILSCALE_AUTH_KEY }}"
-          echo "key=$STATIC_KEY" >> "$GITHUB_OUTPUT"
+          if [ -n "$STATIC_KEY" ]; then
+            echo "key=$STATIC_KEY" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "::error::tailscale_enabled is true, but no Tailscale auth key could be obtained (OAuth failed/missing and no static key provided)."
+          echo "Aborting deployment to prevent closing SSH access without a functional Tailscale connection."
+          exit 1
 
       # ── Stage Secrets Payload (WP-3A) ───────────────────────────────────────
       - name: Stage secrets payload
@@ -413,6 +469,7 @@ jobs:
             -var="secrets_url=${{ steps.secrets_payload.outputs.secrets_url }}"
             -var="release_channel=${{ inputs.release_channel }}"
             -var="agent_sandbox_strict=${{ inputs.agent_sandbox_strict }}"
+            -var="tailscale_enabled=${{ inputs.tailscale_enabled }}"
           )
           if [ "${{ inputs.cloud }}" = "hetzner" ]; then
             terraform apply "${COMMON_ARGS[@]}" \
@@ -445,19 +502,38 @@ jobs:
 
           echo "Waiting for provisioning to complete on $IP (up to 15 min)..."
           PROVISION_STATUS="timeout"
+          AUTH_FAIL_COUNT=0
           for i in $(seq 1 90); do
-            if ssh "${SSH_OPTS[@]}" "$USER@$IP" 'test -f /etc/devbox/.provisioned' 2>/dev/null; then
-              echo "✅ Provisioning completed successfully."
-              PROVISION_STATUS="success"
-              break
+            if SSH_OUT=$(ssh "${SSH_OPTS[@]}" "$USER@$IP" 'test -f /etc/devbox/.provisioned && echo PROVISIONED || (test -f /etc/devbox/.failed && echo FAILED || echo WAITING)' 2>&1); then
+              SSH_EXIT=0
+            else
+              SSH_EXIT=$?
             fi
-            if ssh "${SSH_OPTS[@]}" "$USER@$IP" 'test -f /etc/devbox/.failed' 2>/dev/null; then
-              echo "❌ Provisioning failed."
-              echo "::error::Provisioning failed — see logs below"
-              ssh "${SSH_OPTS[@]}" "$USER@$IP" 'sudo cat /etc/devbox/.failed 2>/dev/null || true; echo "---"; sudo tail -80 /var/log/devbox-install.log 2>/dev/null || sudo tail -80 /var/log/cloud-init-output.log 2>/dev/null || true' 2>/dev/null || true
-              PROVISION_STATUS="failed"
-              echo "status=failed" >> "$GITHUB_OUTPUT"
-              exit 1
+            if [ $SSH_EXIT -eq 0 ]; then
+              if [[ "$SSH_OUT" == *"PROVISIONED"* ]]; then
+                echo "✅ Provisioning completed successfully."
+                PROVISION_STATUS="success"
+                break
+              elif [[ "$SSH_OUT" == *"FAILED"* ]]; then
+                echo "❌ Provisioning failed."
+                echo "::error::Provisioning failed — see logs below"
+                ssh "${SSH_OPTS[@]}" "$USER@$IP" 'sudo cat /etc/devbox/.failed 2>/dev/null || true; echo "---"; sudo tail -80 /var/log/devbox-install.log 2>/dev/null || sudo tail -80 /var/log/cloud-init-output.log 2>/dev/null || true' 2>/dev/null || true
+                PROVISION_STATUS="failed"
+                echo "status=failed" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+            else
+              if [[ "$SSH_OUT" == *"Permission denied"* ]]; then
+                AUTH_FAIL_COUNT=$((AUTH_FAIL_COUNT + 1))
+                if [ "$AUTH_FAIL_COUNT" -ge 6 ]; then
+                  echo "::error::SSH authentication failed (Permission denied). The runner deploy key is not authorized on $IP."
+                  PROVISION_STATUS="auth_failed"
+                  echo "status=failed" >> "$GITHUB_OUTPUT"
+                  exit 1
+                fi
+              else
+                AUTH_FAIL_COUNT=0
+              fi
             fi
             if [ "$((i % 6))" -eq 0 ]; then
               echo "  ... still waiting ($((i * 10))s elapsed)"
@@ -496,7 +572,7 @@ jobs:
             exit "$DOCTOR_EXIT"
           fi
 
-      # ── Cleanup runner access ───────────────────────────────────────────────
+      # ── Cleanup runner access (WP-1A) ───────────────────────────────────────
       - name: Cleanup runner access
         if: always() && inputs.use_runner_ssh_key != true
         working-directory: terraform/${{ inputs.cloud }}
@@ -508,8 +584,33 @@ jobs:
           else
             unset TF_VAR_ssh_allowed_cidrs
           fi
+
+          echo "Restoring firewall rules (revoking runner IP)..."
+          TARGET=""
+          TARGET_RESOURCE=""
+          EXTRA_ARGS=()
+          if [ "${{ inputs.cloud }}" = "hetzner" ]; then
+            TARGET="-target=hcloud_firewall.this"
+            TARGET_RESOURCE="hcloud_firewall.this"
+            EXTRA_ARGS=(-var="server_type=${{ inputs.server_type }}" -var="location=${{ inputs.location }}" -var="backups=${{ inputs.backups }}")
+          elif [ "${{ inputs.cloud }}" = "aws" ]; then
+            TARGET="-target=aws_security_group.this"
+            TARGET_RESOURCE="aws_security_group.this"
+            EXTRA_ARGS=(-var="instance_type=${{ inputs.server_type }}" -var="region=${{ inputs.location }}")
+          elif [ "${{ inputs.cloud }}" = "azure" ]; then
+            TARGET="-target=azurerm_network_security_group.this"
+            TARGET_RESOURCE="azurerm_network_security_group.this"
+            EXTRA_ARGS=(-var="vm_size=${{ inputs.server_type }}" -var="location=${{ inputs.location }}")
+          fi
+
+          if ! terraform state list 2>/dev/null | grep -q "$TARGET_RESOURCE"; then
+            echo "Resource $TARGET_RESOURCE not present in state; skipping firewall rule cleanup."
+            exit 0
+          fi
+
           COMMON_ARGS=(
             -auto-approve
+            "$TARGET"
             -var="name=${{ inputs.name_prefix }}"
             -var="disk_size=$DISK_SIZE"
             -var="install_docker=${{ inputs.install_docker }}"
@@ -521,34 +622,14 @@ jobs:
             -var="tarball_url=${{ steps.payload.outputs.tarball_url }}"
             -var="git_sha256=${{ steps.payload.outputs.sha256 }}"
             -var="git_ref=${{ steps.payload.outputs.payload_ref }}"
-            -var="runner_ssh_public_key="
             -var="secrets_url=${{ steps.secrets_payload.outputs.secrets_url }}"
             -var="release_channel=${{ inputs.release_channel }}"
             -var="agent_sandbox_strict=${{ inputs.agent_sandbox_strict }}"
+            -var="tailscale_enabled=${{ inputs.tailscale_enabled }}"
+            "${EXTRA_ARGS[@]}"
           )
-          if [ "${{ inputs.cloud }}" = "hetzner" ]; then
-            terraform apply "${COMMON_ARGS[@]}" \
-              -var="server_type=${{ inputs.server_type }}" \
-              -var="location=${{ inputs.location }}" \
-              -var="backups=${{ inputs.backups }}" 2>&1 || true
-          elif [ "${{ inputs.cloud }}" = "aws" ]; then
-            terraform apply "${COMMON_ARGS[@]}" \
-              -var="instance_type=${{ inputs.server_type }}" \
-              -var="region=${{ inputs.location }}" 2>&1 || true
-          elif [ "${{ inputs.cloud }}" = "azure" ]; then
-            terraform apply "${COMMON_ARGS[@]}" \
-              -var="vm_size=${{ inputs.server_type }}" \
-              -var="location=${{ inputs.location }}" 2>&1 || true
-          fi
 
-          # Remove runner public key from authorized_keys on devbox
-          IP="${{ steps.readiness.outputs.ip }}"
-          USER="${{ steps.readiness.outputs.user }}"
-          SSH_KEY="${{ steps.runner_key.outputs.private_key_path }}"
-          RUNNER_PUB="${{ steps.runner_key.outputs.public_key }}"
-          if [ -n "$IP" ] && [ -n "$USER" ] && [ -f "$SSH_KEY" ]; then
-            ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -i "$SSH_KEY" "$USER@$IP" "sed -i '\|${RUNNER_PUB}|d' ~/.ssh/authorized_keys 2>/dev/null || true" 2>/dev/null || true
-          fi
+          terraform apply "${COMMON_ARGS[@]}"
 
       # ── Delete staged secrets object (WP-3A) ────────────────────────────────
       - name: Cleanup staged secrets object
@@ -562,7 +643,25 @@ jobs:
           elif [ "${{ inputs.cloud }}" = "aws" ]; then
             BUCKET="${{ steps.state_aws.outputs.bucket }}"
             REGION="${{ inputs.location }}"
-            aws s3 rm "s3://$BUCKET/secrets/$RUN_ID.env" --region "$REGION" 2>/dev/null || true
+            KEY="secrets/$RUN_ID.env"
+            RAW_VERSIONS=$(aws s3api list-object-versions --bucket "$BUCKET" --prefix "$KEY" --region "$REGION" --output json 2>/dev/null || echo "{}")
+            DELETE_PAYLOAD=$(echo "$RAW_VERSIONS" | jq -c --arg key "$KEY" '
+              [
+                (.Versions[]? | select(.Key == $key) | {Key: .Key, VersionId: .VersionId}),
+                (.DeleteMarkers[]? | select(.Key == $key) | {Key: .Key, VersionId: .VersionId})
+              ] as $objs |
+              if ($objs | length) > 0 then {Objects: $objs, Quiet: true} else empty end
+            ')
+            if [ -n "$DELETE_PAYLOAD" ]; then
+              DELETE_RESP=$(aws s3api delete-objects --bucket "$BUCKET" --delete "$DELETE_PAYLOAD" --region "$REGION" --output json)
+              ERR_COUNT=$(echo "$DELETE_RESP" | jq '(.Errors // []) | length' 2>/dev/null || echo 0)
+              if [ "$ERR_COUNT" -gt 0 ]; then
+                echo "::error::Failed to delete secret object versions: $(echo "$DELETE_RESP" | jq -c .Errors)"
+                exit 1
+              fi
+            else
+              aws s3 rm "s3://$BUCKET/$KEY" --region "$REGION" || true
+            fi
           elif [ "${{ inputs.cloud }}" = "azure" ]; then
             SA="${{ steps.state_azure.outputs.storage_account }}"
             az storage blob delete --account-name "$SA" --account-key "$ARM_ACCESS_KEY" -c "tfstate" -n "secrets/$RUN_ID.env" 2>/dev/null || true

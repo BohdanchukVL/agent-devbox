@@ -12,6 +12,7 @@ module "core" {
   install_antigravity   = var.install_antigravity
   install_browser       = var.install_browser
   tailscale_authkey     = var.tailscale_authkey
+  tailscale_enabled     = var.tailscale_enabled
   workspace_device      = local.use_volume ? "/dev/disk/by-id/scsi-0HC_Volume_${hcloud_volume.workspace[0].id}" : ""
   git_repo              = var.git_repo
   git_ref               = var.git_ref
@@ -49,12 +50,15 @@ resource "hcloud_firewall" "this" {
     }
   }
 
-  rule {
-    description = "Tailscale WireGuard"
-    direction   = "in"
-    protocol    = "udp"
-    port        = "41641"
-    source_ips  = ["0.0.0.0/0", "::/0"]
+  dynamic "rule" {
+    for_each = var.tailscale_enabled ? [1] : []
+    content {
+      description = "Tailscale WireGuard"
+      direction   = "in"
+      protocol    = "udp"
+      port        = "41641"
+      source_ips  = ["0.0.0.0/0", "::/0"]
+    }
   }
 
   rule {

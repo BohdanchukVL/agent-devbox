@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { execSync } from 'node:child_process';
 
 import {
   cacheKeyForDir,
@@ -165,3 +166,67 @@ test('updateFileInCache updates cached tags for specific file', () => {
     }
   }
 });
+
+test('getFreshnessKey invalidates cache when an already-dirty file is modified again', () => {
+  const tempGitDir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-freshness-test-'));
+  const testFile = path.join(tempGitDir, 'test.js');
+
+  try {
+    execSync('git init -b main', { cwd: tempGitDir, stdio: 'ignore' });
+    execSync('git config user.email "test@example.com"', { cwd: tempGitDir, stdio: 'ignore' });
+    execSync('git config user.name "Test"', { cwd: tempGitDir, stdio: 'ignore' });
+    fs.writeFileSync(testFile, 'initial');
+    execSync('git add test.js && git commit -m "init"', { cwd: tempGitDir, stdio: 'ignore' });
+
+    const keyClean = getFreshnessKey(tempGitDir);
+    assert.ok(keyClean.endsWith(':clean'));
+
+    // First edit: dirty file
+    fs.writeFileSync(testFile, 'edited-once');
+    const keyDirty1 = getFreshnessKey(tempGitDir);
+    assert.notEqual(keyClean, keyDirty1);
+
+    // Second edit: same dirty file modified again
+    // Ensure mtime ticks forward slightly if filesystem has 1s mtime resolution
+    const now = new Date(Date.now() + 2000);
+    fs.writeFileSync(testFile, 'edited-twice-longer-content');
+    fs.utimesSync(testFile, now, now);
+
+    const keyDirty2 = getFreshnessKey(tempGitDir);
+    assert.notEqual(keyDirty1, keyDirty2, 'Key should change when existing dirty file is modified again');
+  } finally {
+    fs.rmSync(tempGitDir, { recursive: true, force: true });
+  }
+});
+
+test('getFreshnessKey handles files with spaces without quoting corruption', () => {
+  const tempGitDir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-spaces-test-'));
+  const testFile = path.join(tempGitDir, 'file with space.js');
+
+  try {
+    execSync('git init -b main', { cwd: tempGitDir, stdio: 'ignore' });
+    execSync('git config user.email "test@example.com"', { cwd: tempGitDir, stdio: 'ignore' });
+    execSync('git config user.name "Test"', { cwd: tempGitDir, stdio: 'ignore' });
+    fs.writeFileSync(testFile, 'initial');
+    execSync('git add . && git commit -m "init"', { cwd: tempGitDir, stdio: 'ignore' });
+
+    const keyClean = getFreshnessKey(tempGitDir);
+    assert.ok(keyClean.endsWith(':clean'));
+
+    // First edit
+    fs.writeFileSync(testFile, 'edited-once');
+    const keyDirty1 = getFreshnessKey(tempGitDir);
+    assert.notEqual(keyClean, keyDirty1);
+
+    // Second edit
+    const now = new Date(Date.now() + 2000);
+    fs.writeFileSync(testFile, 'edited-twice-longer-content');
+    fs.utimesSync(testFile, now, now);
+
+    const keyDirty2 = getFreshnessKey(tempGitDir);
+    assert.notEqual(keyDirty1, keyDirty2, 'Key should change when file with space is edited again');
+  } finally {
+    fs.rmSync(tempGitDir, { recursive: true, force: true });
+  }
+});
+
