@@ -32,10 +32,27 @@ log "installing base packages"
 apt-get update -y
 apt-get install -y --no-install-recommends \
   git curl wget jq unzip zip ripgrep fzf tmux htop bubblewrap qrencode \
-  rsync socat dnsutils strace ncdu \
+  rsync socat dnsutils strace ncdu locales \
   build-essential ca-certificates gnupg \
   python3 python3-venv python3-pip pipx \
   universal-ctags golang-go
+
+log "configuring UTF-8 locale and tmux UTF-8 wrapper"
+locale-gen en_US.UTF-8 >/dev/null 2>&1 || true
+update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 >/dev/null 2>&1 || true
+
+if [ -f /usr/bin/tmux ] && [ ! -f /usr/bin/tmux.bin ]; then
+  dpkg-divert --add --rename --divert /usr/bin/tmux.bin /usr/bin/tmux
+  cat << 'EOF' > /usr/bin/tmux
+#!/bin/sh
+export LANG="${LANG:-en_US.UTF-8}"
+export LC_ALL="${LC_ALL:-en_US.UTF-8}"
+export LC_CTYPE="${LC_CTYPE:-en_US.UTF-8}"
+exec /usr/bin/tmux.bin -u "$@"
+EOF
+  chmod 0755 /usr/bin/tmux
+  ln -sf /usr/bin/tmux /usr/local/bin/tmux
+fi
 
 log "configuring unprivileged user namespaces for bubblewrap sandbox"
 if [ -d /etc/apparmor.d ] && command -v apparmor_parser >/dev/null 2>&1; then

@@ -126,7 +126,7 @@ pub struct Resolved {
     pub osc52_max_bytes: usize,
     /// intercept native pastes that are local file paths → upload
     pub paste_intercept: PasteIntercept,
-    /// command to exec instead of a login shell (e.g. `tmux new -A -s main`)
+    /// command to exec instead of a login shell (e.g. `tmux -u new -A -s main`)
     pub remote_command: Option<String>,
     /// how long after the leader key to wait for the command key
     pub leader_timeout: std::time::Duration,

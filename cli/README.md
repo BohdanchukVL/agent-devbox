@@ -109,7 +109,7 @@ host = "203.0.113.7"
 port = 22
 user = "deploy"
 identity_file = "~/.ssh/prod_ed25519"
-remote_command = "tmux new -A -s main"   # land straight in a persistent session
+remote_command = "tmux -u new -A -s main"   # land straight in a persistent session
 
 [hosts.shared-staging]
 host = "staging.example.com"

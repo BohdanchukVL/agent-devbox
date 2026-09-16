@@ -144,11 +144,27 @@ pub async fn connect(cfg: &Resolved) -> Result<Ssh> {
         .request_pty(false, &term, cols as u32, rows as u32, 0, 0, &[])
         .await
         .context("request pty")?;
+    // Attempt to pass UTF-8 locale variables on the SSH channel.
+    shell.set_env(false, "LANG", "en_US.UTF-8").await.ok();
+    shell.set_env(false, "LC_ALL", "en_US.UTF-8").await.ok();
+    shell.set_env(false, "LC_CTYPE", "en_US.UTF-8").await.ok();
+
     match &cfg.remote_command {
-        Some(cmd) => shell
-            .exec(false, cmd.as_bytes())
-            .await
-            .context("exec remote command")?,
+        Some(cmd) => {
+            let effective_cmd = if (cmd.starts_with("tmux ") || cmd == "tmux")
+                && !cmd.split_whitespace().any(|part| {
+                    part == "-u"
+                        || (part.starts_with('-') && !part.starts_with("--") && part.contains('u'))
+                }) {
+                cmd.replacen("tmux", "tmux -u", 1)
+            } else {
+                cmd.clone()
+            };
+            shell
+                .exec(false, effective_cmd.as_bytes())
+                .await
+                .context("exec remote command")?
+        }
         None => shell.request_shell(false).await.context("request shell")?,
     }
 
