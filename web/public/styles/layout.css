@@ -222,7 +222,6 @@ header.app-header {
 
 .xterm-viewport {
   scrollbar-width: none !important;
-  overflow-y: hidden !important;
 }
 
 .xterm-viewport::-webkit-scrollbar {

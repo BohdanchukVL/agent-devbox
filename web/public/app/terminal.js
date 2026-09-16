@@ -26,6 +26,8 @@ export class TerminalController {
       fontSize: this.fontSize,
       fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, \"Roboto Mono\", \"Noto Sans Mono\", monospace",
       scrollback: this.isMobile ? 0 : 1000,
+      scrollOnUserInput: false,
+      macOptionClickForcesSelection: true,
       theme: {
         background: "#121212",
         foreground: "#d4d4d4",
