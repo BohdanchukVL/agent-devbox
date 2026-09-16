@@ -14,7 +14,7 @@ import {
   createAction,
   createControl
 } from '../public/app/protocol.js';
-import { SessionCoordinator } from '../server.js';
+import { SessionCoordinator, isMouseWheel } from '../server.js';
 
 test('protocol.js: parseMessage separates control frames and raw input', () => {
   // 1. Valid control frames
@@ -91,4 +91,13 @@ test('SessionCoordinator: ownership and observer mode', () => {
   assert.equal(coord.controller, 'mobile');
   assert.equal(mobile.isController, true);
   assert.equal(mobile.readonly, false);
+});
+
+test('isMouseWheel detects SGR mouse wheel sequences', () => {
+  assert.equal(isMouseWheel('\x1b[<64;20;10M'), true);
+  assert.equal(isMouseWheel('\x1b[<65;1;1M'), true);
+  assert.equal(isMouseWheel('\x1b[<64;1;1M\x1b[<64;1;1M'), true);
+  assert.equal(isMouseWheel('\x1b[<0;20;10M'), false);
+  assert.equal(isMouseWheel('ls -la\r'), false);
+  assert.equal(isMouseWheel('\x1b[A'), false);
 });

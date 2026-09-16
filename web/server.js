@@ -123,6 +123,10 @@ function isDaResponse(str) {
   return typeof str === 'string' && (str.startsWith('\x1b[>') || str.startsWith('\x1b[?')) && str.endsWith('c');
 }
 
+function isMouseWheel(str) {
+  return typeof str === 'string' && /^(\x1b\[<6[45];\d+;\d+[Mm])+$/.test(str);
+}
+
 function getPanesInfo(sessionName) {
   sessionName = sanitizeSessionName(sessionName);
   try {
@@ -1049,9 +1053,12 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
-    // Direct text / keystrokes: only allow if not in readonly observer mode
+    // Direct text / keystrokes: only allow if not in readonly observer mode,
+    // but allow mouse wheel scrolling so observers can navigate history cleanly.
     if (clientState.readonly) {
-      return;
+      if (!isMouseWheel(raw)) {
+        return;
+      }
     }
 
     term.write(raw);
@@ -1140,6 +1147,7 @@ export {
   identityAllowed,
   authorize,
   isDaResponse,
+  isMouseWheel,
   getPanesInfo,
   SessionCoordinator,
   sessionCoordinators,

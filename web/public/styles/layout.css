@@ -14,15 +14,24 @@ html, body {
   overflow: hidden;
   position: fixed;
   inset: 0;
+  overscroll-behavior: none;
+  -webkit-overflow-scrolling: auto;
+  touch-action: none;
 }
 
 #app {
   display: flex;
   flex-direction: column;
   height: var(--app-height, 100dvh);
+  max-height: var(--app-height, 100dvh);
   width: 100vw;
   overflow: hidden;
-  position: relative;
+  position: fixed;
+  top: var(--keyboard-offset, 0px);
+  left: 0;
+  right: 0;
+  overscroll-behavior: none;
+  touch-action: none;
 }
 
 /* ── Top Header ────────────────────────────────────────────── */
@@ -181,9 +190,18 @@ header.app-header {
   position: relative;
   background: var(--bg-app);
   overflow: hidden;
+  touch-action: none;
+  overscroll-behavior: none;
 }
 
 #terminal {
   width: 100%;
   height: 100%;
+  touch-action: none;
+  overscroll-behavior: none;
+}
+
+.xterm, .xterm-screen, .xterm-viewport {
+  touch-action: none !important;
+  overscroll-behavior: none !important;
 }
