@@ -142,6 +142,26 @@ if [ "${INSTALL_CLAUDE:-true}" = "true" ]; then
   else
     warn "Claude settings.json statusLine is not configured for the devbox hook"
   fi
+
+  CLAUDE_SETTINGS="$HOME_DIR/.claude/settings.json"
+  if [ -f "$CLAUDE_SETTINGS" ]; then
+    if jq -e '.sandbox.enabled == true and
+              .sandbox.failIfUnavailable == true and
+              (.sandbox.credentials.files | length > 0 and all(type == "object" and .path != null and .mode == "deny")) and
+              (.sandbox.credentials.envVars | length > 0 and all(type == "object" and .name != null and .mode == "deny"))' "$CLAUDE_SETTINGS" >/dev/null 2>&1; then
+      ok "Claude sandbox configuration verified (enabled, failIfUnavailable, credentials object structure)"
+    else
+      fail "Claude settings.json missing required sandbox or credentials configuration (expected objects with mode: deny)"
+    fi
+
+    if [ "${AGENT_SANDBOX_STRICT:-true}" != "false" ]; then
+      if jq -e '.sandbox.allowUnsandboxedCommands == false and (.allowUnsandboxedCommands == null)' "$CLAUDE_SETTINGS" >/dev/null 2>&1; then
+        ok "Claude strict sandbox enforcement verified (.sandbox.allowUnsandboxedCommands == false, no root leak)"
+      else
+        fail "Claude strict sandbox misconfigured: expected .sandbox.allowUnsandboxedCommands == false and no root .allowUnsandboxedCommands"
+      fi
+    fi
+  fi
 fi
 
 # 4c. ccusage session tracker verification (when Claude or Codex enabled)
@@ -302,10 +322,15 @@ fi
 
 # Bubblewrap unprivileged sandbox isolation check
 if command -v bwrap >/dev/null 2>&1; then
-  if bwrap --unshare-user --ro-bind / / -- sudo -n true 2>/dev/null; then
-    fail "bwrap setuid privilege escalation succeeded (expected failure in unprivileged userns)"
+  # Positive control: verify that unprivileged user can launch bwrap container
+  if sudo -u "$DEVBOX_USER" bwrap --ro-bind / / -- true 2>/dev/null; then
+    if sudo -u "$DEVBOX_USER" bwrap --unshare-user --ro-bind / / -- sudo -n true 2>/dev/null; then
+      fail "bwrap setuid privilege escalation succeeded (expected failure in unprivileged userns)"
+    else
+      ok "bwrap sandbox prevents setuid privilege escalation"
+    fi
   else
-    ok "bwrap sandbox prevents setuid privilege escalation"
+    warn "bwrap installed but cannot execute basic container as $DEVBOX_USER"
   fi
 fi
 

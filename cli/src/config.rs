@@ -222,18 +222,45 @@ fn default_identities() -> Vec<PathBuf> {
         .collect()
 }
 
+pub fn find_config_path() -> Option<PathBuf> {
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        if !xdg.is_empty() {
+            let p = PathBuf::from(xdg).join("devbox/config.toml");
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+
+    if let Some(home) = dirs::home_dir() {
+        let p = home.join(".config/devbox/config.toml");
+        if p.exists() {
+            return Some(p);
+        }
+    }
+
+    if let Some(cfg_dir) = dirs::config_dir() {
+        let p = cfg_dir.join("devbox/config.toml");
+        if p.exists() {
+            return Some(p);
+        }
+    }
+
+    None
+}
+
 pub fn resolve(
     target: &str,
     port: Option<u16>,
     identity: Option<String>,
     inbox: Option<String>,
 ) -> Result<Resolved> {
-    let cfg: FileConfig = match dirs::config_dir().map(|d| d.join("devbox/config.toml")) {
-        Some(path) if path.exists() => {
+    let cfg: FileConfig = match find_config_path() {
+        Some(path) => {
             let raw = std::fs::read_to_string(&path).context("read devbox config")?;
             toml::from_str(&raw).context("parse devbox config")?
         }
-        _ => FileConfig::default(),
+        None => FileConfig::default(),
     };
 
     let default_inbox = cfg

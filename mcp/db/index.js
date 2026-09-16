@@ -36,6 +36,12 @@ export function isLocalPostgresUrl(target) {
   }
 }
 
+function isEnvTrue(val) {
+  if (!val) return false;
+  const s = String(val).trim().toLowerCase();
+  return s === 'true' || s === '1' || s === 'yes' || s === 'on';
+}
+
 // Helper: Discover active database if none provided.
 // Inverted default for security: Remote databases (PostgreSQL) are NEVER auto-discovered
 // from .env or process.env unless explicitly allowed via DEVBOX_DB_ALLOW_REMOTE=true.
@@ -44,8 +50,8 @@ export function resolveConnection(inputTarget) {
     const target = inputTarget.trim();
     if (isPostgres(target)) {
       try {
-        const u = new URL(target);
-        if (u.protocol !== 'postgres:' && u.protocol !== 'postgresql:') {
+        const parsed = new URL(target);
+        if (parsed.protocol !== 'postgres:' && parsed.protocol !== 'postgresql:') {
           return { target: null, error: 'Invalid database URL scheme. Supported: postgres:, postgresql:' };
         }
       } catch {
@@ -56,10 +62,10 @@ export function resolveConnection(inputTarget) {
   }
 
   // 1. Environment variable (unless disabled via DEVBOX_DB_DISABLE_ENV)
-  if (process.env.DEVBOX_DB_DISABLE_ENV !== 'true' && process.env.DATABASE_URL) {
+  if (!isEnvTrue(process.env.DEVBOX_DB_DISABLE_ENV) && process.env.DATABASE_URL) {
     const envUrl = process.env.DATABASE_URL.trim();
     if (isPostgres(envUrl)) {
-      if (process.env.DEVBOX_DB_ALLOW_REMOTE === 'true' || isLocalPostgresUrl(envUrl)) {
+      if (isEnvTrue(process.env.DEVBOX_DB_ALLOW_REMOTE) || isLocalPostgresUrl(envUrl)) {
         return { target: envUrl };
       }
       return {
@@ -71,7 +77,7 @@ export function resolveConnection(inputTarget) {
   }
 
   // 2. Check .env in cwd (unless disabled via DEVBOX_DB_DISABLE_ENV)
-  if (process.env.DEVBOX_DB_DISABLE_ENV !== 'true') {
+  if (!isEnvTrue(process.env.DEVBOX_DB_DISABLE_ENV)) {
     const envPath = path.join(process.cwd(), '.env');
     if (fs.existsSync(envPath)) {
       try {
@@ -345,6 +351,85 @@ async function handleDescribeTable(args) {
   }
 }
 
+function hasMultipleStatements(sql) {
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let inLineComment = false;
+  let inBlockComment = false;
+  let semicolonCount = 0;
+  let hasCharsAfterSemicolon = false;
+
+  for (let i = 0; i < sql.length; i++) {
+    const ch = sql[i];
+    const next = sql[i + 1];
+
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+    if (inBlockComment) {
+      if (ch === '*' && next === '/') {
+        inBlockComment = false;
+        i++;
+      }
+      continue;
+    }
+    if (inSingleQuote) {
+      if (ch === "'") {
+        if (next === "'") {
+          i++; // Escaped quote ''
+        } else {
+          inSingleQuote = false;
+        }
+      }
+      continue;
+    }
+    if (inDoubleQuote) {
+      if (ch === '"') {
+        if (next === '"') {
+          i++;
+        } else {
+          inDoubleQuote = false;
+        }
+      }
+      continue;
+    }
+
+    if (ch === '-' && next === '-') {
+      inLineComment = true;
+      i++;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      inBlockComment = true;
+      i++;
+      continue;
+    }
+
+    if (ch === "'") {
+      inSingleQuote = true;
+      if (semicolonCount > 0) hasCharsAfterSemicolon = true;
+      continue;
+    }
+    if (ch === '"') {
+      inDoubleQuote = true;
+      if (semicolonCount > 0) hasCharsAfterSemicolon = true;
+      continue;
+    }
+
+    if (ch === ';') {
+      semicolonCount++;
+      continue;
+    }
+
+    if (semicolonCount > 0 && !/\s/.test(ch)) {
+      hasCharsAfterSemicolon = true;
+    }
+  }
+
+  return hasCharsAfterSemicolon;
+}
+
 // 3. Tool: db_query (Safe Read-Only)
 async function handleQuery(args) {
   let query = (args.query || '').trim();
@@ -356,8 +441,8 @@ async function handleQuery(args) {
     return { error: 'Security restriction: Only read-only queries (SELECT, WITH, EXPLAIN, PRAGMA) are permitted via MCP.' };
   }
 
-  // Prevent multiple statements
-  if (query.split(';').map(s => s.trim()).filter(Boolean).length > 1) {
+  // Prevent multiple statements (ignoring semicolons inside literals or comments)
+  if (hasMultipleStatements(query)) {
     return { error: 'Security restriction: Multiple SQL statements are not permitted.' };
   }
 
@@ -367,15 +452,17 @@ async function handleQuery(args) {
     return { error: 'Security restriction: Calling administrative, process control, config-override, file I/O, network, or sleep functions is not permitted.' };
   }
 
-  const limit = Math.min(parseInt(args.limit || '25', 10), 100);
+  const rawLimit = parseInt(args.limit, 10);
+  const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 100) : 25;
   const resolved = resolveConnection(args.connection);
   if (resolved.error) return { error: resolved.error };
   const target = resolved.target;
 
-  // Inject limit if not already present
-  if (!query.toUpperCase().includes('LIMIT') && !cleaned.startsWith('EXPLAIN') && !cleaned.startsWith('PRAGMA')) {
-    query = `${query.replace(/;?\s*$/, '')} LIMIT ${limit};`;
-  }
+  const isExplainOrPragma = cleaned.startsWith('EXPLAIN') || cleaned.startsWith('PRAGMA');
+  const stripped = query.replace(/;?\s*$/, '');
+  const limitedQuery = isExplainOrPragma
+    ? query
+    : `SELECT * FROM (${stripped}) AS __devbox_limited_subquery LIMIT ${limit};`;
 
   if (isPostgres(target)) {
     const client = new PgClient({ connectionString: target });
@@ -384,7 +471,7 @@ async function handleQuery(args) {
       await client.query("SET statement_timeout = '5s'");
       // Read-only transaction enforcement
       await client.query('BEGIN READ ONLY');
-      const res = await client.query(query);
+      const res = await client.query(limitedQuery);
       await client.query('ROLLBACK');
       await client.end();
 
@@ -393,7 +480,7 @@ async function handleQuery(args) {
       }
 
       const headers = Object.keys(res.rows[0]);
-      const tableMd = formatMarkdownTable(headers, res.rows);
+      const tableMd = formatMarkdownTable(headers, res.rows.slice(0, limit));
       return { text: `### Query Result (${res.rows.length} rows)\n\n${tableMd}` };
     } catch (err) {
       try { await client.query('ROLLBACK'); await client.end(); } catch {}
@@ -404,10 +491,23 @@ async function handleQuery(args) {
     const dbPath = path.resolve(process.cwd(), target);
     if (!fs.existsSync(dbPath)) return { error: `SQLite file not found: ${dbPath}` };
 
+    let db = null;
     try {
-      const db = new sqlite.DatabaseSync(dbPath, { readOnly: true });
-      const rows = db.prepare(query).all();
-      db.close();
+      db = new sqlite.DatabaseSync(dbPath, { readOnly: true });
+
+      let stmt;
+      try {
+        stmt = db.prepare(limitedQuery);
+      } catch {
+        // Fallback to original query if subquery is not valid syntax for this command
+        stmt = db.prepare(query);
+      }
+
+      const rows = [];
+      for (const row of stmt.iterate()) {
+        rows.push(row);
+        if (rows.length >= limit) break;
+      }
 
       if (rows.length === 0) {
         return { text: `Query executed successfully. 0 rows returned.` };
@@ -418,6 +518,10 @@ async function handleQuery(args) {
       return { text: `### Query Result (${rows.length} rows)\n\n${tableMd}` };
     } catch (err) {
       return { error: `SQLite query error: ${err.message}` };
+    } finally {
+      if (db) {
+        try { db.close(); } catch {}
+      }
     }
   }
 }
