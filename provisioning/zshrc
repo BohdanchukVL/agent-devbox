@@ -1,5 +1,7 @@
-# devbox zsh — batteries-included dev shell. Every tool is optional (guarded),
-# so this file works even if an install step was skipped.
+# UTF-8 locale: critical for non-ASCII/Cyrillic rendering across Tailscale SSH and minimal terminals
+export LANG="${LANG:-en_US.UTF-8}"
+export LC_ALL="${LC_ALL:-en_US.UTF-8}"
+export LC_CTYPE="${LC_CTYPE:-en_US.UTF-8}"
 
 # user-owned bins first: npm globals (claude/codex, self-updatable) and
 # ~/.local/bin (agy/antigravity, pipx). Set before the tmux attach so panes
@@ -15,9 +17,9 @@ if [[ $- == *i* ]] && [[ -z ${TMUX:-} ]] && [[ -n ${SSH_CONNECTION:-} ]] && comm
   # Clean up terminal modes (disable mouse tracking, bracketed paste, etc.) on detach or disconnect
   trap 'printf "\e[?1000l\e[?1002l\e[?1003l\e[?1004l\e[?1005l\e[?1006l\e[?1015l\e[?2004l\e[?25h\e[?1049l"' EXIT INT TERM HUP
   if [[ -d /workspace ]] && [[ -w /workspace ]]; then
-    tmux new -A -s main -c /workspace
+    tmux -u new -A -s main -c /workspace
   else
-    tmux new -A -s main
+    tmux -u new -A -s main
   fi
   printf "\e[?1000l\e[?1002l\e[?1003l\e[?1004l\e[?1005l\e[?1006l\e[?1015l\e[?2004l\e[?25h\e[?1049l"
   exit 0
