@@ -252,8 +252,15 @@ if not os.path.exists(config_path):
 else:
     with open(config_path, 'r') as f:
         content = f.read()
+    root_keys = ""
     if 'sandbox_mode' not in content:
-        content = 'sandbox_mode = \"workspace-write\"\napproval_policy = \"on-request\"\n\n' + content
+        root_keys += 'sandbox_mode = \"workspace-write\"\n'
+    if 'approval_policy' not in content:
+        root_keys += 'approval_policy = \"on-request\"\n'
+    if root_keys:
+        content = root_keys + '\n' + content
+    if '[sandbox_workspace_write]' not in content:
+        content += '\n[sandbox_workspace_write]\nwritable_roots = [\"/workspace\"]\nnetwork_access = true\n'
     if '[mcp_servers' not in content:
         content += '\n' + mcp_servers_block
     with open(config_path, 'w') as f:
