@@ -14,7 +14,7 @@ import {
   createAction,
   createControl
 } from '../public/app/protocol.js';
-import { SessionCoordinator, isMouseWheel, isGarbageResponse } from '../server.js';
+import { SessionCoordinator, getCoordinator, isMouseWheel, isGarbageResponse } from '../server.js';
 
 test('protocol.js: parseMessage separates control frames and raw input', () => {
   // 1. Valid control frames
@@ -124,4 +124,45 @@ test('isGarbageResponse identifies probe responses and does not block user input
   assert.equal(isGarbageResponse('echo hello'), false);
   assert.equal(isGarbageResponse('\x1b[A'), false); // Up arrow
   assert.equal(isGarbageResponse('\x1b[<64;10;10M'), false); // Mouse wheel
+});
+
+test('SessionCoordinator: multi-mobile client isolation and handoff', () => {
+  const coord = new SessionCoordinator('multi-mobile-test');
+
+  const mobile1 = { id: 'mobile-1', clientType: 'mobile', ws: { send() {} } };
+  const mobile2 = { id: 'mobile-2', clientType: 'mobile', ws: { send() {} } };
+
+  // First mobile client connects -> becomes controller
+  coord.addClient(mobile1);
+  assert.equal(mobile1.isController, true);
+  assert.equal(mobile1.readonly, false);
+  assert.equal(coord.canAct(mobile1.id), true);
+
+  // Second mobile client connects -> MUST be in observer mode
+  coord.addClient(mobile2);
+  assert.equal(mobile2.isController, false);
+  assert.equal(mobile2.readonly, true);
+  assert.equal(coord.canAct(mobile2.id), false);
+  assert.equal(mobile1.isController, true);
+  assert.equal(mobile1.readonly, false);
+
+  // Second mobile client explicitly requests control -> control hands over cleanly
+  coord.setController('mobile', mobile2.id);
+  assert.equal(mobile2.isController, true);
+  assert.equal(mobile2.readonly, false);
+  assert.equal(coord.canAct(mobile2.id), true);
+  assert.equal(mobile1.isController, false);
+  assert.equal(mobile1.readonly, true);
+  assert.equal(coord.canAct(mobile1.id), false);
+});
+
+test('getCoordinator: normalizes web-* session keys to unified coordinator', () => {
+  const c1 = getCoordinator('web-mobile-abc');
+  const c2 = getCoordinator('web-desktop-xyz');
+  const c3 = getCoordinator('main');
+  const c4 = getCoordinator('');
+
+  assert.equal(c1, c2);
+  assert.equal(c2, c3);
+  assert.equal(c3, c4);
 });

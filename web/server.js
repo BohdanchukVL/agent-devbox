@@ -193,56 +193,159 @@ function getPanesInfo(sessionName) {
   }
 }
 
+function normalizeCoordinatorSession(sessionName) {
+  const clean = sanitizeSessionName(sessionName || 'main');
+  return clean.startsWith('web-') ? 'main' : clean;
+}
+
 class SessionCoordinator {
   constructor(sessionName) {
-    this.sessionName = sessionName;
+    this.sessionName = normalizeCoordinatorSession(sessionName);
     this.clients = new Set();
-    this.controller = 'desktop';
+    this.controller = 'desktop'; // 'desktop' | 'mobile'
+    this.controllerClientId = null;
+  }
+
+  hasNativeSsh() {
+    try {
+      const targetSession = this.sessionName || 'main';
+      const out = execFileSync('tmux', ['list-clients', '-t', targetSession, '-F', '#{client_tty}'], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore']
+      });
+      const webTtys = new Set();
+      for (const c of this.clients) {
+        if (c.term && c.term._pty) {
+          webTtys.add(c.term._pty);
+        }
+      }
+      const attachedTtys = out.split('\n').map(s => s.trim()).filter(Boolean);
+      return attachedTtys.some(tty => !webTtys.has(tty));
+    } catch {
+      return false;
+    }
   }
 
   addClient(client) {
+    if (!client.id) {
+      client.id = 'client-' + Math.random().toString(36).substring(2, 9);
+    }
     this.clients.add(client);
     this.recompute();
   }
 
   removeClient(client) {
     this.clients.delete(client);
+    if (this.controllerClientId === client.id) {
+      this.controllerClientId = null;
+    }
     this.recompute();
   }
 
   recompute() {
-    const hasDesktop = Array.from(this.clients).some(c => c.clientType === 'desktop');
-    const hasMobile = Array.from(this.clients).some(c => c.clientType === 'mobile');
+    const clientsList = Array.from(this.clients);
+    const hasDesktop = clientsList.some(c => c.clientType === 'desktop');
+    const hasMobile = clientsList.some(c => c.clientType === 'mobile');
+    const nativeSsh = this.hasNativeSsh();
 
-    if (!hasMobile) {
+    if (!hasMobile && !hasDesktop) {
       this.controller = 'desktop';
-    } else if (!hasDesktop) {
+      this.controllerClientId = null;
+    } else if (!hasMobile) {
+      this.controller = 'desktop';
+      if (!this.controllerClientId || !clientsList.some(c => c.id === this.controllerClientId && c.clientType === 'desktop')) {
+        const firstDesktop = clientsList.find(c => c.clientType === 'desktop');
+        this.controllerClientId = firstDesktop ? firstDesktop.id : null;
+      }
+    } else if (!hasDesktop && !nativeSsh) {
       this.controller = 'mobile';
+      if (!this.controllerClientId || !clientsList.some(c => c.id === this.controllerClientId && c.clientType === 'mobile')) {
+        const firstMobile = clientsList.find(c => c.clientType === 'mobile');
+        this.controllerClientId = firstMobile ? firstMobile.id : null;
+      }
+    } else {
+      // Both desktop and mobile exist, or native SSH is present
+      const currentController = clientsList.find(c => c.id === this.controllerClientId);
+      if (!currentController) {
+        // Desktop has priority when desktop clients or native SSH are present
+        this.controller = 'desktop';
+        const firstDesktop = clientsList.find(c => c.clientType === 'desktop');
+        this.controllerClientId = firstDesktop ? firstDesktop.id : null;
+      } else {
+        this.controller = currentController.clientType;
+      }
     }
+
     for (const c of this.clients) {
-      c.isController = (c.clientType === this.controller);
-      c.readonly = !c.isController;
+      const isCtrl = (this.controllerClientId ? c.id === this.controllerClientId : (c.clientType === this.controller));
+      c.isController = isCtrl;
+      c.readonly = !isCtrl;
     }
   }
 
-  setController(newController) {
+  setController(newController, targetClientId = null) {
     this.controller = newController;
+    const clientsList = Array.from(this.clients);
+    if (targetClientId) {
+      const target = clientsList.find(c => c.id === targetClientId || c.sessionName === targetClientId || c === targetClientId);
+      if (target) {
+        this.controllerClientId = target.id;
+        this.controller = target.clientType;
+      }
+    } else {
+      const candidate = clientsList.find(c => c.clientType === newController);
+      this.controllerClientId = candidate ? candidate.id : null;
+    }
+
     for (const c of this.clients) {
-      c.isController = (c.clientType === this.controller);
-      c.readonly = !c.isController;
+      const isCtrl = (this.controllerClientId ? c.id === this.controllerClientId : (c.clientType === this.controller));
+      c.isController = isCtrl;
+      const prevReadonly = c.readonly;
+      c.readonly = !isCtrl;
+
+      if (c.term && c.term._pty) {
+        try {
+          if (c.readonly && !prevReadonly) {
+            spawnSync('tmux', ['refresh-client', '-t', c.term._pty, '-f', 'ignore-size']);
+          } else if (!c.readonly && prevReadonly) {
+            spawnSync('tmux', ['refresh-client', '-t', c.term._pty, '-f', '!ignore-size']);
+            if (c.cols && c.rows) {
+              c.term.resize(c.cols, c.rows);
+            }
+          }
+        } catch {}
+      }
     }
     this.broadcastControl();
   }
 
+  canAct(clientOrId) {
+    if (!clientOrId) {
+      return this.controller === 'desktop';
+    }
+    const client = Array.from(this.clients).find(c =>
+      c.id === clientOrId || c.sessionName === clientOrId || c === clientOrId
+    );
+    if (client) {
+      return client.isController && !client.readonly;
+    }
+    return false;
+  }
+
   broadcastControl() {
-    const msg = JSON.stringify({
-      type: 'control',
-      controller: this.controller,
-      session: this.sessionName
-    });
+    const nativeSsh = this.hasNativeSsh();
     for (const c of this.clients) {
       if (c.ws && c.ws.readyState === c.ws.OPEN) {
-        c.ws.send(msg);
+        c.ws.send(JSON.stringify({
+          type: 'control',
+          controller: this.controller,
+          controllerClientId: this.controllerClientId,
+          clientId: c.id,
+          readonly: c.readonly,
+          isController: c.isController,
+          nativeSsh,
+          session: this.sessionName
+        }));
       }
     }
   }
@@ -250,10 +353,11 @@ class SessionCoordinator {
 
 const sessionCoordinators = new Map();
 function getCoordinator(sessionName) {
-  if (!sessionCoordinators.has(sessionName)) {
-    sessionCoordinators.set(sessionName, new SessionCoordinator(sessionName));
+  const key = normalizeCoordinatorSession(sessionName);
+  if (!sessionCoordinators.has(key)) {
+    sessionCoordinators.set(key, new SessionCoordinator(key));
   }
-  return sessionCoordinators.get(sessionName);
+  return sessionCoordinators.get(key);
 }
 
 function isTrustedProxyReq(req) {
@@ -696,14 +800,12 @@ async function handleRequest(req, res) {
             fullPath: destPath
           };
 
-          let inserted = false;
-          try {
-            execFileSync('tmux', ['send-keys', '-t', targetPane, '-l', `${relativePath} `]);
-            inserted = true;
-          } catch (e) {
-            console.error(`[upload] failed to send-keys to ${targetPane}:`, e.message);
-          }
-          uploadedFile.inserted = inserted;
+          uploadedFile = {
+            filename: destName,
+            path: relativePath,
+            fullPath: destPath,
+            inserted: false
+          };
           resolve();
         });
       });
@@ -753,6 +855,18 @@ async function handleRequest(req, res) {
         const data = JSON.parse(body || '{}');
         const session = sanitizeSessionName(data.session || 'main');
         ensureTmuxSession(session);
+        const coordinator = getCoordinator(session);
+        const clientId = data.clientId || data.session;
+
+        // Observer protection: mutating terminal actions require controller rights
+        const mutatingActions = ['zoom', 'next-window', 'prev-window', 'select-pane', 'select-window'];
+        if (mutatingActions.includes(data.action)) {
+          if (!coordinator.canAct(clientId)) {
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, error: 'Дія заблокована: режим перегляду' }));
+            return;
+          }
+        }
 
         if (data.action === 'zoom') {
           spawnSync('tmux', ['resize-pane', '-Z', '-t', session]);
@@ -775,10 +889,8 @@ async function handleRequest(req, res) {
             spawnSync('tmux', ['resize-pane', '-Z', '-t', session]);
           }
         } else if (data.action === 'take-control') {
-          const coordinator = getCoordinator(session);
-          coordinator.setController(data.client === 'mobile' ? 'mobile' : 'desktop');
+          coordinator.setController(data.client === 'mobile' ? 'mobile' : 'desktop', clientId);
         } else if (data.action === 'release-control') {
-          const coordinator = getCoordinator(session);
           coordinator.setController('desktop');
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -812,6 +924,8 @@ async function handleRequest(req, res) {
       session,
       cwd,
       controller: coordinator.controller,
+      controllerClientId: coordinator.controllerClientId,
+      nativeSsh: coordinator.hasNativeSsh(),
       node: process.version,
       auth: AUTH_MODE,
       user: identity ? identity.login : null
@@ -964,9 +1078,23 @@ wss.on('connection', (ws, req) => {
 
   activeSessionClients.set(sessionName, (activeSessionClients.get(sessionName) || 0) + 1);
 
-  console.log(`[ws] client connected (${clientType})${who} -> session "${sessionName}" [${cols}x${rows}]`);
+  const clientId = url.searchParams.get('clientId') || sessionName;
+  const coordKey = normalizeCoordinatorSession(sessionName);
+  const coordinator = getCoordinator(coordKey);
 
-  const term = pty.spawn('tmux', ['attach-session', '-t', sessionName], {
+  const hasDesktop = Array.from(coordinator.clients).some(c => c.clientType === 'desktop');
+  const nativeSsh = coordinator.hasNativeSsh();
+  const startsAsObserver = (clientType === 'mobile' && (hasDesktop || nativeSsh || Boolean(coordinator.controllerClientId)));
+
+  console.log(`[ws] client connected (${clientType})${who} -> session "${sessionName}" [${cols}x${rows}] (observer: ${startsAsObserver})`);
+
+  const attachArgs = ['attach-session'];
+  if (startsAsObserver) {
+    attachArgs.push('-f', 'ignore-size');
+  }
+  attachArgs.push('-t', sessionName);
+
+  const term = pty.spawn('tmux', attachArgs, {
     name: 'xterm-256color',
     cols: Math.max(cols, 20),
     rows: Math.max(rows, 10),
@@ -979,23 +1107,27 @@ wss.on('connection', (ws, req) => {
   });
 
   const clientState = {
+    id: clientId,
     ws,
     clientType,
     sessionName,
     term,
-    isController: false,
-    readonly: false
+    cols: Math.max(cols, 20),
+    rows: Math.max(rows, 10),
+    isController: !startsAsObserver,
+    readonly: startsAsObserver
   };
 
-  const coordKey = sessionName.startsWith('web-') ? 'main' : sessionName;
-  const coordinator = getCoordinator(coordKey);
   coordinator.addClient(clientState);
 
   ws.send(JSON.stringify({
     type: 'session',
     session: sessionName,
+    clientId: clientState.id,
     controller: coordinator.controller,
+    controllerClientId: coordinator.controllerClientId,
     readonly: clientState.readonly,
+    nativeSsh: coordinator.hasNativeSsh(),
     protocol: PROTOCOL_VERSION
   }));
 
@@ -1006,28 +1138,7 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('message', (message, isBinary) => {
-    const isExplicitBinary = isBinary || (message instanceof Buffer && message.length > 0 && message[0] !== 0x7b);
-
-    if (isExplicitBinary) {
-      const raw = message.toString('utf-8');
-      if (clientState.readonly) {
-        if (isMouseWheel(raw)) {
-          term.write(raw);
-        }
-        return;
-      }
-      if (isGarbageResponse(raw)) return;
-      const cleanRaw = raw.replace(/\x1b\[[>?=]?[\d;]+c/g, '')
-                          .replace(/0;276;0c/g, '')
-                          .replace(/\x1b\[\d+(;\d+)?R/g, '')
-                          .replace(/\x1b\[0n/g, '');
-      if (cleanRaw) {
-        term.write(cleanRaw);
-      }
-      return;
-    }
-
-    const raw = message.toString('utf-8');
+    const raw = (message instanceof Buffer) ? message.toString('utf-8') : String(message);
     const parsed = parseMessage(raw);
 
     if (parsed.isControl) {
@@ -1040,7 +1151,10 @@ wss.on('connection', (ws, req) => {
               session: sessionName,
               paneId: getPaneId(sessionName),
               controller: coordinator.controller,
+              controllerClientId: coordinator.controllerClientId,
+              clientId: clientState.id,
               readonly: clientState.readonly,
+              nativeSsh: coordinator.hasNativeSsh(),
               cols: term.cols,
               rows: term.rows,
               protocol: PROTOCOL_VERSION
@@ -1052,12 +1166,15 @@ wss.on('connection', (ws, req) => {
             }
             const c = Math.max(parseInt(msg.cols, 10) || 20, 10);
             const r = Math.max(parseInt(msg.rows, 10) || 10, 5);
+            clientState.cols = c;
+            clientState.rows = r;
             term.resize(c, r);
           } else if (msg.type === MSG_INPUT) {
             if (clientState.readonly) {
               ws.send(JSON.stringify({
                 type: MSG_ERROR,
-                message: 'Режим перегляду: увімкніть керування для введення'
+                message: 'Режим перегляду: увімкніть керування для введення',
+                opId: msg.opId
               }));
               return;
             }
@@ -1065,7 +1182,15 @@ wss.on('connection', (ws, req) => {
               if (msg.paneId && msg.paneId !== 'default') {
                 const cleanPane = String(msg.paneId).replace(/[^a-zA-Z0-9_%-]/g, '');
                 if (cleanPane) {
-                  spawnSync('tmux', ['select-pane', '-t', cleanPane]);
+                  const selRes = spawnSync('tmux', ['select-pane', '-t', cleanPane]);
+                  if (selRes.status !== 0) {
+                    ws.send(JSON.stringify({
+                      type: MSG_ERROR,
+                      message: 'Панель не знайдена: ' + cleanPane,
+                      opId: msg.opId
+                    }));
+                    return;
+                  }
                 }
               }
               term.write(msg.data);
@@ -1075,7 +1200,7 @@ wss.on('connection', (ws, req) => {
             }
           } else if (msg.type === MSG_CONTROL) {
             if (msg.action === 'request') {
-              coordinator.setController(clientState.clientType);
+              coordinator.setController(clientState.clientType, clientState.id);
             } else if (msg.action === 'release') {
               coordinator.setController('desktop');
             }
@@ -1152,7 +1277,7 @@ wss.on('connection', (ws, req) => {
     } catch {}
     coordinator.removeClient(clientState);
     if (coordinator.clients.size === 0) {
-      sessionCoordinators.delete(sessionName);
+      sessionCoordinators.delete(coordKey);
     }
     const remaining = (activeSessionClients.get(sessionName) || 1) - 1;
     if (remaining <= 0) {
