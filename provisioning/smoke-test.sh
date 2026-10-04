@@ -73,7 +73,7 @@ else
 fi
 
 # Load configuration flags if available
-if [ -f /etc/devbox/devbox.env ]; then
+if [ -r /etc/devbox/devbox.env ]; then
   # shellcheck source=/dev/null
   . /etc/devbox/devbox.env
 fi
@@ -362,7 +362,7 @@ if command -v lsattr >/dev/null 2>&1; then
 fi
 
 # cloud-init scrub: no secrets in devbox.env
-if [ -f /etc/devbox/devbox.env ]; then
+if [ -r /etc/devbox/devbox.env ]; then
   if grep -qE '(TAILSCALE_AUTHKEY|DEVBOX_WEB_TOKEN|PROVISIONING_TOKEN)=".+"' /etc/devbox/devbox.env 2>/dev/null; then
     fail "Secrets still present in /etc/devbox/devbox.env"
   else
