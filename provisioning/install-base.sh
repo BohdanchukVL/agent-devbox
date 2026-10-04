@@ -92,13 +92,18 @@ curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR:-22}.x" | bash -
 apt-get install -y nodejs
 npm install -g "pnpm@$(pin PNPM_VERSION 9.15.9)"
 
-log "installing language servers (LSP: TypeScript, Python, Rust, Go)"
-npm install -g typescript typescript-language-server pyright
-if [ ! -f /usr/local/bin/rust-analyzer ]; then
-  curl -fsSL https://github.com/rust-lang/rust-analyzer/releases/latest/download/rust-analyzer-x86_64-unknown-linux-gnu.gz | gzip -d > /usr/local/bin/rust-analyzer 2>/dev/null && chmod +x /usr/local/bin/rust-analyzer || true
-fi
-if command -v go >/dev/null 2>&1; then
-  GOBIN=/usr/local/bin go install golang.org/x/tools/gopls@latest >/dev/null 2>&1 || true
+if [ "${INSTALL_LSP:-true}" = "true" ]; then
+  log "installing language servers (LSP: TypeScript, Python, Rust, Go)"
+  npm install -g \
+    "typescript@$(pin TYPESCRIPT_VERSION 5.8.2)" \
+    "typescript-language-server@$(pin TYPESCRIPT_LANGUAGE_SERVER_VERSION 4.3.3)" \
+    "pyright@$(pin PYRIGHT_VERSION 1.1.396)" || log "warning: npm LSP installation failed (continuing)"
+  if [ ! -f /usr/local/bin/rust-analyzer ]; then
+    curl -fsSL https://github.com/rust-lang/rust-analyzer/releases/latest/download/rust-analyzer-x86_64-unknown-linux-gnu.gz | gzip -d > /usr/local/bin/rust-analyzer 2>/dev/null && chmod +x /usr/local/bin/rust-analyzer || log "warning: rust-analyzer installation failed (continuing)"
+  fi
+  if command -v go >/dev/null 2>&1; then
+    GOBIN=/usr/local/bin go install "golang.org/x/tools/gopls@$(pin GOPLS_VERSION v0.23.0)" >/dev/null 2>&1 || log "warning: gopls installation failed (continuing)"
+  fi
 fi
 
 if [ "$INSTALL_DOCKER" = "true" ]; then

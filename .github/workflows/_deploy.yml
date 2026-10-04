@@ -89,7 +89,7 @@ on:
         description: Enable Tailscale join and configuration
         required: false
         type: boolean
-        default: true
+        default: false
 
 permissions:
   id-token: write
@@ -639,32 +639,36 @@ jobs:
           if [ "${{ inputs.cloud }}" = "hetzner" ]; then
             BUCKET="${{ steps.state_hetzner.outputs.bucket }}"
             ENDPOINT="${{ steps.state_hetzner.outputs.endpoint }}"
-            aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3 rm "s3://$BUCKET/secrets/$RUN_ID.env" 2>/dev/null || true
+            aws --endpoint-url "$ENDPOINT" --region "$STATE_LOCATION" s3 rm "s3://$BUCKET/secrets/$RUN_ID.env" || echo "::warning::Hetzner S3 secrets cleanup could not remove object"
           elif [ "${{ inputs.cloud }}" = "aws" ]; then
             BUCKET="${{ steps.state_aws.outputs.bucket }}"
             REGION="${{ inputs.location }}"
             KEY="secrets/$RUN_ID.env"
-            RAW_VERSIONS=$(aws s3api list-object-versions --bucket "$BUCKET" --prefix "$KEY" --region "$REGION" --output json 2>/dev/null || echo "{}")
-            DELETE_PAYLOAD=$(echo "$RAW_VERSIONS" | jq -c --arg key "$KEY" '
-              [
-                (.Versions[]? | select(.Key == $key) | {Key: .Key, VersionId: .VersionId}),
-                (.DeleteMarkers[]? | select(.Key == $key) | {Key: .Key, VersionId: .VersionId})
-              ] as $objs |
-              if ($objs | length) > 0 then {Objects: $objs, Quiet: true} else empty end
-            ')
-            if [ -n "$DELETE_PAYLOAD" ]; then
-              DELETE_RESP=$(aws s3api delete-objects --bucket "$BUCKET" --delete "$DELETE_PAYLOAD" --region "$REGION" --output json)
-              ERR_COUNT=$(echo "$DELETE_RESP" | jq '(.Errors // []) | length' 2>/dev/null || echo 0)
-              if [ "$ERR_COUNT" -gt 0 ]; then
-                echo "::error::Failed to delete secret object versions: $(echo "$DELETE_RESP" | jq -c .Errors)"
-                exit 1
+            if RAW_VERSIONS=$(aws s3api list-object-versions --bucket "$BUCKET" --prefix "$KEY" --region "$REGION" --output json 2>/dev/null); then
+              DELETE_PAYLOAD=$(echo "$RAW_VERSIONS" | jq -c --arg key "$KEY" '
+                [
+                  (.Versions[]? | select(.Key == $key) | {Key: .Key, VersionId: .VersionId}),
+                  (.DeleteMarkers[]? | select(.Key == $key) | {Key: .Key, VersionId: .VersionId})
+                ] as $objs |
+                if ($objs | length) > 0 then {Objects: $objs, Quiet: true} else empty end
+              ')
+              if [ -n "$DELETE_PAYLOAD" ]; then
+                DELETE_RESP=$(aws s3api delete-objects --bucket "$BUCKET" --delete "$DELETE_PAYLOAD" --region "$REGION" --output json)
+                ERR_COUNT=$(echo "$DELETE_RESP" | jq '(.Errors // []) | length' 2>/dev/null || echo 0)
+                if [ "$ERR_COUNT" -gt 0 ]; then
+                  echo "::error::Failed to delete secret object versions: $(echo "$DELETE_RESP" | jq -c .Errors)"
+                  exit 1
+                fi
+              else
+                aws s3 rm "s3://$BUCKET/$KEY" --region "$REGION"
               fi
             else
-              aws s3 rm "s3://$BUCKET/$KEY" --region "$REGION" || true
+              echo "::error::Failed to query object versions for secret cleanup in s3://$BUCKET/$KEY"
+              exit 1
             fi
           elif [ "${{ inputs.cloud }}" = "azure" ]; then
             SA="${{ steps.state_azure.outputs.storage_account }}"
-            az storage blob delete --account-name "$SA" --account-key "$ARM_ACCESS_KEY" -c "tfstate" -n "secrets/$RUN_ID.env" 2>/dev/null || true
+            az storage blob delete --account-name "$SA" --account-key "$ARM_ACCESS_KEY" -c "tfstate" -n "secrets/$RUN_ID.env" 2>/dev/null || echo "::warning::Azure blob secret cleanup failed"
           fi
 
       # ── Deployment Summary ──────────────────────────────────────────────────
