@@ -192,82 +192,86 @@ chmod 0600 "$SETTINGS_FILE"
 rm -f /tmp/.claude-status.json 2>/dev/null || true
 
 # Codex sandbox & MCP config (WP-3B: workspace-write sandbox mode + MCP parity)
-install -d -o "$U" -g "$U" "$H/.codex"
-python3 -c "
-import os
+if [ "$INSTALL_CODEX" = "true" ]; then
+  install -d -o "$U" -g "$U" "$H/.codex"
+  python3 - "$H" << 'PYEOF'
+import sys, os, shutil
+try:
+    import tomllib
+except ImportError:
+    tomllib = None
 
-config_path = '$H/.codex/config.toml'
-home_dir = '$H'
+home_dir = sys.argv[1]
+config_path = os.path.join(home_dir, '.codex', 'config.toml')
+
+devbox_mcp_servers = {
+    "ast-grep": '''[mcp_servers.ast-grep]
+command = "ast-grep-mcp"''',
+    "code-intel": f'''[mcp_servers.code-intel]
+command = "node"
+args = ["{home_dir}/.devbox/mcp/code-intel/index.js"]''',
+    "memory": f'''[mcp_servers.memory]
+command = "{home_dir}/.devbox/bin/devbox-memory"''',
+    "playwright": '''[mcp_servers.playwright]
+command = "playwright-mcp"
+args = ["--headless"]''',
+    "db": f'''[mcp_servers.db]
+command = "node"
+args = ["{home_dir}/.devbox/mcp/db/index.js"]'''
+}
 
 base_config = f'''# Codex configuration for agent-devbox
-sandbox_mode = \"workspace-write\"
-approval_policy = \"on-request\"
+sandbox_mode = "workspace-write"
+approval_policy = "on-request"
 
 [sandbox_workspace_write]
-writable_roots = [\"/workspace\"]
+writable_roots = ["/workspace"]
 network_access = true
 
-[mcp_servers.ast-grep]
-command = \"ast-grep-mcp\"
-
-[mcp_servers.code-intel]
-command = \"node\"
-args = [\"{home_dir}/.devbox/mcp/code-intel/index.js\"]
-
-[mcp_servers.memory]
-command = \"{home_dir}/.devbox/bin/devbox-memory\"
-
-[mcp_servers.playwright]
-command = \"playwright-mcp\"
-args = [\"--headless\"]
-
-[mcp_servers.db]
-command = \"node\"
-args = [\"{home_dir}/.devbox/mcp/db/index.js\"]
-'''
-
-mcp_servers_block = f'''
-[mcp_servers.ast-grep]
-command = \"ast-grep-mcp\"
-
-[mcp_servers.code-intel]
-command = \"node\"
-args = [\"{home_dir}/.devbox/mcp/code-intel/index.js\"]
-
-[mcp_servers.memory]
-command = \"{home_dir}/.devbox/bin/devbox-memory\"
-
-[mcp_servers.playwright]
-command = \"playwright-mcp\"
-args = [\"--headless\"]
-
-[mcp_servers.db]
-command = \"node\"
-args = [\"{home_dir}/.devbox/mcp/db/index.js\"]
-'''
+''' + '\n\n'.join(devbox_mcp_servers.values()) + '\n'
 
 if not os.path.exists(config_path):
-    with open(config_path, 'w') as f:
+    with open(config_path, 'w', encoding='utf-8') as f:
         f.write(base_config)
 else:
-    with open(config_path, 'r') as f:
+    shutil.copy2(config_path, config_path + '.bak')
+    with open(config_path, 'r', encoding='utf-8') as f:
         content = f.read()
+
+    parsed = {}
+    if tomllib:
+        try:
+            parsed = tomllib.loads(content)
+        except Exception:
+            parsed = {}
+
     root_keys = ""
-    if 'sandbox_mode' not in content:
-        root_keys += 'sandbox_mode = \"workspace-write\"\n'
-    if 'approval_policy' not in content:
-        root_keys += 'approval_policy = \"on-request\"\n'
+    if 'sandbox_mode' not in parsed:
+        root_keys += 'sandbox_mode = "workspace-write"\n'
+    if 'approval_policy' not in parsed:
+        root_keys += 'approval_policy = "on-request"\n'
+
     if root_keys:
         content = root_keys + '\n' + content
-    if '[sandbox_workspace_write]' not in content:
-        content += '\n[sandbox_workspace_write]\nwritable_roots = [\"/workspace\"]\nnetwork_access = true\n'
-    if '[mcp_servers' not in content:
-        content += '\n' + mcp_servers_block
-    with open(config_path, 'w') as f:
+
+    if 'sandbox_workspace_write' not in parsed:
+        content += '\n[sandbox_workspace_write]\nwritable_roots = ["/workspace"]\nnetwork_access = true\n'
+
+    existing_mcps = parsed.get('mcp_servers', {})
+    mcps_to_add = []
+    for name, block in devbox_mcp_servers.items():
+        if name not in existing_mcps and f'[mcp_servers.{name}]' not in content:
+            mcps_to_add.append(block)
+
+    if mcps_to_add:
+        content += '\n' + '\n\n'.join(mcps_to_add) + '\n'
+
+    with open(config_path, 'w', encoding='utf-8') as f:
         f.write(content)
-"
-chown "$U:$U" "$H/.codex/config.toml"
-chmod 0600 "$H/.codex/config.toml"
+PYEOF
+  chown "$U:$U" "$H/.codex/config.toml"
+  chmod 0600 "$H/.codex/config.toml"
+fi
 
 # Configure persistent memory storage (persisting across VM rebuilds if /workspace is mounted)
 if mountpoint -q /workspace 2>/dev/null; then

@@ -173,10 +173,19 @@ if [ "${INSTALL_CODEX:-true}" = "true" ]; then
     else
       warn "Codex config missing sandbox_mode = \"workspace-write\""
     fi
-    if grep -q '\[mcp_servers' "$CODEX_CONFIG" 2>/dev/null; then
-      ok "Codex MCP servers configured for agent parity"
+    EXPECTED_MCPS="ast-grep code-intel memory db"
+    [ "${INSTALL_BROWSER:-true}" = "true" ] && EXPECTED_MCPS="$EXPECTED_MCPS playwright"
+    ALL_MCPS_FOUND=true
+    for m in $EXPECTED_MCPS; do
+      if ! grep -q "\[mcp_servers\.$m\]" "$CODEX_CONFIG" 2>/dev/null; then
+        ALL_MCPS_FOUND=false
+        break
+      fi
+    done
+    if [ "$ALL_MCPS_FOUND" = "true" ]; then
+      ok "Codex MCP servers configured for agent parity ($EXPECTED_MCPS)"
     else
-      warn "Codex config missing [mcp_servers] configuration"
+      warn "Codex config missing one or more required MCP servers ($EXPECTED_MCPS)"
     fi
   else
     warn "Codex config missing at $CODEX_CONFIG"
