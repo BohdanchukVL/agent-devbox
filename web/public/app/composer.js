@@ -126,11 +126,21 @@ export class Composer {
       paneId: this.currentPaneId
     };
 
-    this.onSend({
+    const res = this.onSend({
       text,
       withEnter,
       paneId: this.currentPaneId
     });
+
+    if (res === false || res === null) {
+      // Message could not be dispatched (offline/error). Do NOT delete draft!
+      return;
+    }
+
+    const opId = typeof res === 'number' || typeof res === 'string' ? res : null;
+    if (opId !== null) {
+      this.savePendingDraft(opId, text, this.currentPaneId);
+    }
 
     // Clear current editor, keep backup in lastSubmittedDraft
     this.textarea.value = "";
@@ -139,8 +149,54 @@ export class Composer {
     this.autoResize();
   }
 
+  savePendingDraft(opId, text, paneId) {
+    try {
+      const pending = JSON.parse(sessionStorage.getItem("devbox_pending_drafts") || "{}");
+      pending[opId] = { text, paneId, t: Date.now() };
+      sessionStorage.setItem("devbox_pending_drafts", JSON.stringify(pending));
+    } catch {}
+  }
+
+  acknowledgeOp(opId) {
+    try {
+      const pending = JSON.parse(sessionStorage.getItem("devbox_pending_drafts") || "{}");
+      if (pending[opId]) {
+        delete pending[opId];
+        sessionStorage.setItem("devbox_pending_drafts", JSON.stringify(pending));
+      }
+    } catch {}
+  }
+
+  restorePendingDraft(opId) {
+    try {
+      const pending = JSON.parse(sessionStorage.getItem("devbox_pending_drafts") || "{}");
+      const draft = pending[opId];
+      if (draft && draft.text) {
+        // Prevent overwriting if user is already typing something new
+        if (!this.textarea || !this.textarea.value.trim()) {
+          this.currentPaneId = draft.paneId;
+          if (this.textarea) {
+            this.textarea.value = draft.text;
+            this.drafts[this.currentPaneId] = draft.text;
+            this.saveDraftsToStorage();
+            this.autoResize();
+            this.toggle(true);
+          }
+        }
+        delete pending[opId];
+        sessionStorage.setItem("devbox_pending_drafts", JSON.stringify(pending));
+        return draft.text;
+      }
+    } catch {}
+    return null;
+  }
+
   restoreLastDraft() {
     if (this.lastSubmittedDraft && this.lastSubmittedDraft.text) {
+      if (this.textarea && this.textarea.value.trim()) {
+        // User already has text typed: do NOT overwrite it!
+        return;
+      }
       this.currentPaneId = this.lastSubmittedDraft.paneId;
       if (this.textarea) {
         this.textarea.value = this.lastSubmittedDraft.text;

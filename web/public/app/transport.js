@@ -41,7 +41,7 @@ export class Transport {
     this.onControlChanged = options.onControlChanged || (() => {});
     this.onPanesUpdate = options.onPanesUpdate || (() => {});
     this.onError = options.onError || (() => {});
-    this.onAck = options.onAck || (() => {});
+    this.onAckCallback = options.onAck || (() => {});
     this.onSessionAssigned = options.onSessionAssigned || (() => {});
 
     this.ws = null;
@@ -82,35 +82,51 @@ export class Transport {
       "&session=" + encodeURIComponent(this.sessionName) +
       "&cols=" + this.cols + "&rows=" + this.rows + tokenQuery;
 
-    try {
-      this.ws = new WebSocket(wsUrl, [PROTOCOL_VERSION]);
-    } catch (e) {
-      this.ws = new WebSocket(wsUrl);
+    if (this.ws) {
+      const oldWs = this.ws;
+      oldWs.onopen = null;
+      oldWs.onmessage = null;
+      oldWs.onclose = null;
+      oldWs.onerror = null;
+      try { oldWs.close(); } catch {}
+      this.ws = null;
     }
 
-    this.ws.binaryType = "arraybuffer";
+    let socket;
+    try {
+      socket = new WebSocket(wsUrl, [PROTOCOL_VERSION]);
+    } catch (e) {
+      socket = new WebSocket(wsUrl);
+    }
 
-    this.ws.onopen = () => {
+    this.ws = socket;
+    socket.binaryType = "arraybuffer";
+
+    socket.onopen = () => {
+      if (this.ws !== socket) return;
       this.reconnectAttempts = 0;
       this.setState(STATE_LIVE);
 
       // Send initial hello handshake
-      this.ws.send(createHello(this.clientType, this.cols, this.rows));
+      socket.send(createHello(this.clientType, this.cols, this.rows));
       this.startPing();
     };
 
-    this.ws.onmessage = (event) => {
+    socket.onmessage = (event) => {
+      if (this.ws !== socket) return;
       this.handleMessage(event.data);
     };
 
-    this.ws.onclose = () => {
+    socket.onclose = () => {
+      if (this.ws !== socket) return;
       this.stopPing();
       this.setState(STATE_RECONNECTING);
       this.scheduleReconnect();
     };
 
-    this.ws.onerror = () => {
-      try { this.ws.close(); } catch {}
+    socket.onerror = () => {
+      if (this.ws !== socket) return;
+      try { socket.close(); } catch {}
     };
   }
 
@@ -157,7 +173,7 @@ export class Transport {
       }
 
       if (msg.type === MSG_ERROR) {
-        this.onError(msg.message);
+        this.onError(msg.message, msg.opId);
         return;
       }
 

@@ -4,7 +4,7 @@
  */
 
 import { ViewportController } from "./viewport.js";
-import { Transport } from "./transport.js";
+import { Transport, STATE_LIVE } from "./transport.js";
 import { TerminalController } from "./terminal.js";
 import { Composer } from "./composer.js";
 import { PanesManager } from "./panes.js";
@@ -119,12 +119,17 @@ function initApp() {
         }
       }
     },
-    onError: (msg) => {
+    onAck: (opId) => {
+      if (composer) {
+        composer.acknowledgeOp(opId);
+      }
+    },
+    onError: (msg, opId) => {
       if (statusManager) {
         statusManager.showToast(msg, "error");
       }
-      if (composer) {
-        composer.restoreLastDraft();
+      if (composer && opId) {
+        composer.restorePendingDraft(opId);
       }
     },
     onSessionAssigned: (name) => {
@@ -146,18 +151,31 @@ function initApp() {
   composer = new Composer(composerContainer, {
     currentPaneId: "default",
     onSend: ({ text, withEnter, paneId }) => {
-      if (transport) {
-        if (text) {
-          // Use bracketed paste mode (\x1b[200~ ... \x1b[201~) for multiline text
-          // to prevent internal newlines from executing prematurely as Enter keys.
-          const formattedText = text.includes('\n')
-            ? `\x1b[200~${text}\x1b[201~${withEnter ? '\r' : ''}`
-            : (text + (withEnter ? '\r' : ''));
-          transport.sendInput(formattedText, paneId);
-        } else if (withEnter) {
-          transport.sendRaw("\r");
+      if (!transport || transport.state !== STATE_LIVE) {
+        if (statusManager) {
+          statusManager.showToast("Немає зв'язку з сервером, чернетку збережено", "error");
         }
+        return false;
       }
+      let opId = null;
+      if (text) {
+        // Use bracketed paste mode (\x1b[200~ ... \x1b[201~) for multiline text
+        // to prevent internal newlines from executing prematurely as Enter keys.
+        const formattedText = text.includes('\n')
+          ? `\x1b[200~${text}\x1b[201~${withEnter ? '\r' : ''}`
+          : (text + (withEnter ? '\r' : ''));
+        opId = transport.sendInput(formattedText, paneId);
+        if (opId === null) {
+          if (statusManager) {
+            statusManager.showToast("Немає зв'язку з сервером, чернетку збережено", "error");
+          }
+          return false;
+        }
+      } else if (withEnter) {
+        transport.sendRaw("\r");
+        return true;
+      }
+      return opId !== null ? opId : true;
     }
   });
 
